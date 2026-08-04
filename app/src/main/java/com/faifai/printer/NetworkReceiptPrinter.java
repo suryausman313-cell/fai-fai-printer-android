@@ -1,12 +1,22 @@
 package com.faifai.printer;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.util.Base64;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
 import java.nio.charset.Charset;
 import java.util.Locale;
 
@@ -40,6 +50,18 @@ final class NetworkReceiptPrinter {
 
         command(out, 0x1B, 0x40); // Initialize
         align(out, 1);
+        if (receipt.showLogo && !receipt.logoUrl.isEmpty()) {
+            try {
+                Bitmap logo = loadLogo(receipt.logoUrl);
+                if (logo != null) {
+                    rasterImage(out, logo, receipt.paperWidth.equals("58mm") ? 320 : 512);
+                    line(out, "");
+                    logo.recycle();
+                }
+            } catch (Exception ignored) {
+                // A bad/unreachable logo must not stop the order receipt.
+            }
+        }
         bold(out, true);
         size(out, 2);
         line(out, receipt.restaurantName);
@@ -124,6 +146,63 @@ final class NetworkReceiptPrinter {
         line(out, "");
         if (receipt.cutPaper) command(out, 0x1D, 0x56, 0x00);
         return out.toByteArray();
+    }
+
+    private static Bitmap loadLogo(String source) throws Exception {
+        if (source.startsWith("data:image/")) {
+            int comma = source.indexOf(',');
+            if (comma < 0) return null;
+            byte[] bytes = Base64.decode(source.substring(comma + 1), Base64.DEFAULT);
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        }
+
+        HttpURLConnection connection = (HttpURLConnection) new URL(source).openConnection();
+        connection.setConnectTimeout(6000);
+        connection.setReadTimeout(10000);
+        connection.setInstanceFollowRedirects(true);
+        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.1");
+        try {
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) return null;
+            try (InputStream input = connection.getInputStream()) {
+                return BitmapFactory.decodeStream(input);
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static void rasterImage(ByteArrayOutputStream out, Bitmap original, int maxWidth) {
+        int targetWidth = Math.min(maxWidth, original.getWidth());
+        targetWidth = Math.max(8, targetWidth - (targetWidth % 8));
+        int targetHeight = Math.max(1, Math.round(
+                original.getHeight() * (targetWidth / (float) original.getWidth())
+        ));
+
+        Bitmap prepared = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(prepared);
+        canvas.drawColor(Color.WHITE);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(original, null, new android.graphics.Rect(0, 0, targetWidth, targetHeight), paint);
+
+        int bytesPerRow = targetWidth / 8;
+        command(out, 0x1D, 0x76, 0x30, 0x00,
+                bytesPerRow & 0xFF, (bytesPerRow >> 8) & 0xFF,
+                targetHeight & 0xFF, (targetHeight >> 8) & 0xFF);
+
+        for (int y = 0; y < targetHeight; y++) {
+            for (int byteX = 0; byteX < bytesPerRow; byteX++) {
+                int packed = 0;
+                for (int bit = 0; bit < 8; bit++) {
+                    int pixel = prepared.getPixel(byteX * 8 + bit, y);
+                    int alpha = Color.alpha(pixel);
+                    int luminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000;
+                    if (alpha > 40 && luminance < 180) packed |= (0x80 >> bit);
+                }
+                out.write(packed);
+            }
+        }
+        prepared.recycle();
     }
 
     private static void command(ByteArrayOutputStream out, int... values) {
@@ -259,6 +338,8 @@ final class NetworkReceiptPrinter {
         String paperWidth;
         boolean cutPaper;
         String restaurantName;
+        boolean showLogo;
+        String logoUrl;
         String headerText;
         String footerText;
         boolean showCustomerPhone;
@@ -301,6 +382,9 @@ final class NetworkReceiptPrinter {
             result.restaurantName = first(branding, "restaurantName", "restaurant_name");
             if (result.restaurantName.isEmpty()) result.restaurantName = first(settings, "restaurant_name", "restaurantName");
             if (result.restaurantName.isEmpty()) result.restaurantName = "Fai Fai Juice";
+            result.showLogo = bool(branding, bool(settings, false, "show_logo", "showLogo"), "showLogo", "show_logo");
+            result.logoUrl = first(branding, "logoUrl", "logo_url");
+            if (result.logoUrl.isEmpty()) result.logoUrl = first(settings, "logo_url", "logoUrl");
             result.headerText = first(branding, "headerText", "header_text");
             if (result.headerText.isEmpty()) result.headerText = first(settings, "header_text", "headerText");
             result.footerText = first(branding, "footerText", "footer_text");
