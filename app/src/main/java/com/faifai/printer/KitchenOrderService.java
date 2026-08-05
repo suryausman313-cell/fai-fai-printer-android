@@ -11,15 +11,20 @@ import org.json.*;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import android.util.Base64;
 import java.util.concurrent.*;
 
 public class KitchenOrderService extends Service {
     public static final String ACTION_START = "com.faifai.printer.START";
     private static final String CHANNEL_ACTIVE = "kitchen_active";
-    private static final String CHANNEL_ORDER = "kitchen_new_order";
+    private static final String CHANNEL_ORDER = "kitchen_admin_ring_v1";
     private static final String API = "https://vita-napoli-backend-usman.onrender.com/api/v1/kitchen/orders?status=new&limit=10";
+    private static final String SETTINGS_API = "https://vita-napoli-backend-usman.onrender.com/api/v1/receipt-settings";
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private MediaPlayer alarm;
+    private boolean adminAlarmEnabled = true;
+    private String adminAlarmAudio = "";
+    private long lastSettingsCheck = 0;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -45,6 +50,7 @@ public class KitchenOrderService extends Service {
     }
 
     private void poll() {
+        refreshAdminAlarm();
         String pin = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE).getString("pin", "");
         if (pin == null || pin.length() < 4) { stopAlarm(); return; }
         HttpURLConnection c = null;
@@ -57,6 +63,22 @@ public class KitchenOrderService extends Service {
             JSONArray items = new JSONObject(body).optJSONArray("items");
             boolean hasNew = items != null && items.length() > 0;
             if (hasNew) notifyOrder(items.length()); else stopAlarm();
+        } catch (Exception ignored) { } finally { if (c != null) c.disconnect(); }
+    }
+
+    private void refreshAdminAlarm() {
+        long now = System.currentTimeMillis();
+        if (now - lastSettingsCheck < 60000) return;
+        lastSettingsCheck = now;
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(SETTINGS_API).openConnection();
+            c.setConnectTimeout(12000); c.setReadTimeout(20000);
+            if (c.getResponseCode() != 200) return;
+            JSONObject settings = new JSONObject(read(c.getInputStream()));
+            adminAlarmEnabled = settings.optBoolean("kitchen_alarm_enabled", true);
+            adminAlarmAudio = settings.optString("kitchen_alarm_audio", "");
+            if (!adminAlarmEnabled) stopAlarm();
         } catch (Exception ignored) { } finally { if (c != null) c.disconnect(); }
     }
 
@@ -74,15 +96,23 @@ public class KitchenOrderService extends Service {
                 .setContentIntent(openKitchen()).setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM).setOngoing(true).build();
         getSystemService(NotificationManager.class).notify(42, n);
-        boolean sound = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE).getBoolean("sound", true);
-        if (sound && alarm == null) {
+        if (adminAlarmEnabled && !adminAlarmAudio.isEmpty() && alarm == null) {
             try {
-                Uri uri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM);
-                alarm = new MediaPlayer(); alarm.setDataSource(this, uri);
+                File audio = adminAudioFile(adminAlarmAudio, "kitchen_admin_ring");
+                alarm = new MediaPlayer(); alarm.setDataSource(audio.getAbsolutePath());
                 alarm.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build());
                 alarm.setLooping(true); alarm.prepare(); alarm.start();
             } catch (Exception ignored) { stopAlarm(); }
         }
+    }
+
+    private File adminAudioFile(String dataUrl, String name) throws IOException {
+        int comma = dataUrl.indexOf(',');
+        if (!dataUrl.startsWith("data:audio/") || comma < 0) throw new IOException("Invalid Admin ring");
+        byte[] bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT);
+        File file = new File(getCacheDir(), name + ".audio");
+        try (FileOutputStream out = new FileOutputStream(file, false)) { out.write(bytes); }
+        return file;
     }
 
     private synchronized void stopAlarm() {
