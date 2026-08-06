@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.util.Base64;
 
 import org.json.JSONArray;
@@ -18,10 +19,17 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.Charset;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 
 final class NetworkReceiptPrinter {
     private static final Charset PRINTER_CHARSET = Charset.forName("CP437");
+    private static final String WEB_BASE_URL = "https://fai-fai-juice.pages.dev";
+    private static final String DEFAULT_LOGO_URL = WEB_BASE_URL + "/fai-fai-receipt-logo.png";
 
     private NetworkReceiptPrinter() {}
 
@@ -35,7 +43,10 @@ final class NetworkReceiptPrinter {
 
         byte[] data = render(receipt);
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(receipt.printerIp, receipt.printerPort), 6000);
+            socket.connect(
+                    new InetSocketAddress(receipt.printerIp, receipt.printerPort),
+                    6000
+            );
             socket.setSoTimeout(10000);
             try (OutputStream output = socket.getOutputStream()) {
                 output.write(data);
@@ -46,71 +57,158 @@ final class NetworkReceiptPrinter {
 
     private static byte[] render(Receipt receipt) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        int width = receipt.paperWidth.equals("58mm") ? 32 : 48;
+        boolean is58mm = receipt.paperWidth.equals("58mm");
+        int width = is58mm ? 32 : 48;
+        int paperDots = is58mm ? 384 : 576;
+        int logoDots = is58mm ? 150 : 210;
 
-        command(out, 0x1B, 0x40); // Initialize
+        command(out, 0x1B, 0x40); // ESC @ - initialize printer
         align(out, 1);
-        if (receipt.showLogo && !receipt.logoUrl.isEmpty()) {
+
+        if (receipt.showLogo) {
             try {
                 Bitmap logo = loadLogo(receipt.logoUrl);
                 if (logo != null) {
-                    rasterImage(out, logo, receipt.paperWidth.equals("58mm") ? 320 : 512);
+                    rasterImageCentered(out, logo, paperDots, logoDots);
                     line(out, "");
                     logo.recycle();
                 }
             } catch (Exception ignored) {
-                // A bad/unreachable logo must not stop the order receipt.
+                // Logo failure must never stop the receipt.
             }
         }
+
         bold(out, true);
         size(out, 2);
         line(out, receipt.restaurantName);
         size(out, 0);
         bold(out, false);
-        line(out, receipt.headerText);
-        line(out, repeat('-', width));
+
+        multilineCentered(out, receipt.headerText, width);
+        line(out, repeat('=', width));
 
         bold(out, true);
         size(out, 1);
         line(out, "ORDER #" + receipt.orderId);
         size(out, 0);
-        line(out, receipt.copyLabel);
         bold(out, false);
 
+        DateTimeParts dateTime = formatDateTime(receipt.createdAt);
+
         align(out, 0);
-        pair(out, "Type", receipt.orderType, width);
-        pair(out, "Time", receipt.createdAt, width);
-        if (!receipt.customerName.isEmpty()) line(out, "Customer: " + receipt.customerName);
-        if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
-            line(out, "Phone: " + receipt.customerPhone);
-        }
-        if (receipt.showCustomerAddress && !receipt.customerAddress.isEmpty()) {
-            wrapped(out, "Address: " + receipt.customerAddress, width);
-        }
-        if (!receipt.customerNote.isEmpty()) {
-            wrapped(out, "Note: " + receipt.customerNote, width);
-        }
+        pair(out, "Date", dateTime.date, width);
+        pair(out, "Time", dateTime.time, width);
+        pair(out, "Order Type", pretty(receipt.orderType), width);
         if (receipt.showPaymentMethod && !receipt.paymentMethod.isEmpty()) {
-            line(out, "Payment: " + receipt.paymentMethod);
+            pair(out, "Payment", pretty(receipt.paymentMethod), width);
         }
 
         line(out, repeat('-', width));
-        for (int i = 0; i < receipt.items.length(); i++) {
-            JSONObject item = receipt.items.optJSONObject(i);
+        if (!receipt.customerName.isEmpty()) {
+            bold(out, true);
+            wrapped(out, "Customer: " + receipt.customerName, width);
+            bold(out, false);
+        }
+        if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
+            wrapped(out, "Phone: " + receipt.customerPhone, width);
+        }
+
+        line(out, repeat('-', width));
+        printItems(out, receipt, width);
+
+        if (receipt.showOrderTotals) {
+            line(out, repeat('-', width));
+            if (receipt.serviceFee > 0) {
+                pair(out, "Service Fee", money(receipt.serviceFee), width);
+            }
+            if (receipt.smallOrderFee > 0) {
+                pair(out, "Small Order Fee", money(receipt.smallOrderFee), width);
+            }
+            if (receipt.deliveryCharge > 0) {
+                pair(out, "Delivery Fee", money(receipt.deliveryCharge), width);
+            }
+            if (receipt.tipAmount > 0) {
+                pair(out, "Tip", money(receipt.tipAmount), width);
+            }
+
+            line(out, repeat('=', width));
+            bold(out, true);
+            size(out, 1);
+            pair(out, "GRAND TOTAL", money(receipt.totalAmount), width);
+            size(out, 0);
+            bold(out, false);
+        }
+
+        align(out, 1);
+        line(out, repeat('-', width));
+        multilineCentered(out, receipt.footerText, width);
+        line(out, "");
+        line(out, "");
+        line(out, "");
+
+        if (receipt.cutPaper) {
+            command(out, 0x1D, 0x56, 0x00);
+        }
+
+        return out.toByteArray();
+    }
+
+    private static void printItems(
+            ByteArrayOutputStream out,
+            Receipt receipt,
+            int width
+    ) throws Exception {
+        int qtyWidth = receipt.paperWidth.equals("58mm") ? 4 : 5;
+        int priceWidth = receipt.paperWidth.equals("58mm") ? 10 : 12;
+        int itemWidth = Math.max(10, width - qtyWidth - priceWidth);
+
+        bold(out, true);
+        line(
+                out,
+                padRight("QTY", qtyWidth)
+                        + padRight("ITEM", itemWidth)
+                        + padLeft("PRICE", priceWidth)
+        );
+        bold(out, false);
+        line(out, repeat('-', width));
+
+        for (int index = 0; index < receipt.items.length(); index++) {
+            JSONObject item = receipt.items.optJSONObject(index);
             if (item == null) continue;
 
-            int quantity = Math.max(1, item.optInt("quantity", 1));
+            int quantity = Math.max(1, integer(item, 1, "quantity", "qty"));
             String name = first(item, "name", "item_name", "title");
             String sizeName = first(item, "size", "size_name");
-            String itemLabel = quantity + " x " + (name.isEmpty() ? "Item" : name);
-            if (!sizeName.isEmpty()) itemLabel += " (" + sizeName + ")";
-
-            double price = number(item, "price", "total_price", "unit_price");
-            if (receipt.showItemPrices && price > 0) {
-                pair(out, itemLabel, money(price), width);
-            } else {
-                wrapped(out, itemLabel, width);
+            String label = name.isEmpty() ? "Item" : name;
+            if (!sizeName.isEmpty()) {
+                label += " (" + sizeName + ")";
             }
+
+            double price = number(item, "total_price", "line_total");
+            if (price <= 0) {
+                price = number(item, "price", "unit_price");
+            }
+
+            String priceText = receipt.showItemPrices && price > 0
+                    ? money(price)
+                    : "";
+
+            List<String> chunks = wrapChunks(label, itemWidth);
+            if (chunks.isEmpty()) chunks.add("Item");
+
+            // Item row is intentionally bold, as requested.
+            bold(out, true);
+            for (int lineIndex = 0; lineIndex < chunks.size(); lineIndex++) {
+                String qtyText = lineIndex == 0 ? String.valueOf(quantity) : "";
+                String amountText = lineIndex == 0 ? priceText : "";
+                line(
+                        out,
+                        padRight(qtyText, qtyWidth)
+                                + padRight(chunks.get(lineIndex), itemWidth)
+                                + padLeft(amountText, priceWidth)
+                );
+            }
+            bold(out, false);
 
             JSONArray extras = array(item, "extras", "selected_extras", "toppings");
             for (int extraIndex = 0; extraIndex < extras.length(); extraIndex++) {
@@ -121,46 +219,33 @@ final class NetworkReceiptPrinter {
                 } else {
                     extraText = String.valueOf(extra == null ? "" : extra);
                 }
-                if (!extraText.trim().isEmpty()) wrapped(out, "  + " + extraText, width);
+                if (!extraText.trim().isEmpty()) {
+                    wrapped(out, "     + " + extraText, width);
+                }
             }
         }
-
-        if (receipt.showOrderTotals) {
-            line(out, repeat('-', width));
-            if (receipt.serviceFee > 0) pair(out, "Service fee", money(receipt.serviceFee), width);
-            if (receipt.smallOrderFee > 0) pair(out, "Small order fee", money(receipt.smallOrderFee), width);
-            if (receipt.deliveryCharge > 0) pair(out, "Delivery", money(receipt.deliveryCharge), width);
-            if (receipt.tipAmount > 0) pair(out, "Tip", money(receipt.tipAmount), width);
-            bold(out, true);
-            size(out, 1);
-            pair(out, "TOTAL", money(receipt.totalAmount), width);
-            size(out, 0);
-            bold(out, false);
-        }
-
-        align(out, 1);
-        line(out, repeat('-', width));
-        wrapped(out, receipt.footerText, width);
-        line(out, "");
-        line(out, "");
-        line(out, "");
-        if (receipt.cutPaper) command(out, 0x1D, 0x56, 0x00);
-        return out.toByteArray();
     }
 
-    private static Bitmap loadLogo(String source) throws Exception {
+    private static Bitmap loadLogo(String rawSource) throws Exception {
+        String source = resolveLogoSource(rawSource);
+
         if (source.startsWith("data:image/")) {
             int comma = source.indexOf(',');
             if (comma < 0) return null;
-            byte[] bytes = Base64.decode(source.substring(comma + 1), Base64.DEFAULT);
+            byte[] bytes = Base64.decode(
+                    source.substring(comma + 1),
+                    Base64.DEFAULT
+            );
             return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
         }
 
-        HttpURLConnection connection = (HttpURLConnection) new URL(source).openConnection();
-        connection.setConnectTimeout(6000);
-        connection.setReadTimeout(10000);
+        HttpURLConnection connection =
+                (HttpURLConnection) new URL(source).openConnection();
+        connection.setConnectTimeout(8000);
+        connection.setReadTimeout(12000);
         connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.1");
+        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.3");
+
         try {
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) return null;
@@ -172,37 +257,225 @@ final class NetworkReceiptPrinter {
         }
     }
 
-    private static void rasterImage(ByteArrayOutputStream out, Bitmap original, int maxWidth) {
-        int targetWidth = Math.min(maxWidth, original.getWidth());
-        targetWidth = Math.max(8, targetWidth - (targetWidth % 8));
-        int targetHeight = Math.max(1, Math.round(
-                original.getHeight() * (targetWidth / (float) original.getWidth())
-        ));
+    private static String resolveLogoSource(String rawSource) {
+        String source = rawSource == null ? "" : rawSource.trim();
+        if (source.isEmpty()) return DEFAULT_LOGO_URL;
+        if (source.startsWith("data:image/")) return source;
+        if (source.startsWith("http://") || source.startsWith("https://")) {
+            return source;
+        }
+        if (source.startsWith("/")) return WEB_BASE_URL + source;
+        return WEB_BASE_URL + "/" + source;
+    }
 
-        Bitmap prepared = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
+    private static void rasterImageCentered(
+            ByteArrayOutputStream out,
+            Bitmap original,
+            int paperWidthDots,
+            int contentMaxWidthDots
+    ) {
+        int contentWidth = Math.min(contentMaxWidthDots, original.getWidth());
+        contentWidth = Math.max(8, contentWidth - (contentWidth % 8));
+        int contentHeight = Math.max(
+                1,
+                Math.round(
+                        original.getHeight()
+                                * (contentWidth / (float) original.getWidth())
+                )
+        );
+
+        int outputWidth = Math.max(8, paperWidthDots - (paperWidthDots % 8));
+        Bitmap prepared = Bitmap.createBitmap(
+                outputWidth,
+                contentHeight,
+                Bitmap.Config.ARGB_8888
+        );
         Canvas canvas = new Canvas(prepared);
         canvas.drawColor(Color.WHITE);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        canvas.drawBitmap(original, null, new android.graphics.Rect(0, 0, targetWidth, targetHeight), paint);
 
-        int bytesPerRow = targetWidth / 8;
-        command(out, 0x1D, 0x76, 0x30, 0x00,
-                bytesPerRow & 0xFF, (bytesPerRow >> 8) & 0xFF,
-                targetHeight & 0xFF, (targetHeight >> 8) & 0xFF);
+        Paint paint = new Paint(
+                Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG
+        );
+        int left = Math.max(0, (outputWidth - contentWidth) / 2);
+        Rect destination = new Rect(
+                left,
+                0,
+                left + contentWidth,
+                contentHeight
+        );
+        canvas.drawBitmap(original, null, destination, paint);
 
-        for (int y = 0; y < targetHeight; y++) {
+        int bytesPerRow = outputWidth / 8;
+        command(
+                out,
+                0x1D, 0x76, 0x30, 0x00,
+                bytesPerRow & 0xFF,
+                (bytesPerRow >> 8) & 0xFF,
+                contentHeight & 0xFF,
+                (contentHeight >> 8) & 0xFF
+        );
+
+        for (int y = 0; y < contentHeight; y++) {
             for (int byteX = 0; byteX < bytesPerRow; byteX++) {
                 int packed = 0;
                 for (int bit = 0; bit < 8; bit++) {
                     int pixel = prepared.getPixel(byteX * 8 + bit, y);
                     int alpha = Color.alpha(pixel);
-                    int luminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000;
-                    if (alpha > 40 && luminance < 180) packed |= (0x80 >> bit);
+                    int luminance = (
+                            Color.red(pixel) * 299
+                                    + Color.green(pixel) * 587
+                                    + Color.blue(pixel) * 114
+                    ) / 1000;
+
+                    // Higher threshold keeps pineapple/logo details visible
+                    // on a black-and-white thermal printer.
+                    if (alpha > 40 && luminance < 225) {
+                        packed |= (0x80 >> bit);
+                    }
                 }
                 out.write(packed);
             }
         }
+
         prepared.recycle();
+    }
+
+    private static DateTimeParts formatDateTime(String rawValue) {
+        String raw = rawValue == null ? "" : rawValue.trim();
+        if (raw.isEmpty()) return new DateTimeParts("-", "-");
+
+        Date parsed = parseIsoDate(raw);
+        if (parsed != null) {
+            TimeZone dubai = TimeZone.getTimeZone("Asia/Dubai");
+            SimpleDateFormat dateFormat = new SimpleDateFormat(
+                    "dd/MM/yyyy",
+                    Locale.US
+            );
+            SimpleDateFormat timeFormat = new SimpleDateFormat(
+                    "hh:mm a",
+                    Locale.US
+            );
+            dateFormat.setTimeZone(dubai);
+            timeFormat.setTimeZone(dubai);
+            return new DateTimeParts(
+                    dateFormat.format(parsed),
+                    timeFormat.format(parsed)
+            );
+        }
+
+        String clean = printable(raw);
+        int tIndex = clean.indexOf('T');
+        if (tIndex > 0) {
+            String date = clean.substring(0, tIndex);
+            String time = clean.substring(tIndex + 1);
+            int zoneIndex = Math.max(time.indexOf('+'), time.indexOf('Z'));
+            if (zoneIndex > 0) time = time.substring(0, zoneIndex);
+            if (time.length() > 8) time = time.substring(0, 8);
+            return new DateTimeParts(date, time);
+        }
+
+        return new DateTimeParts(clean, "");
+    }
+
+    private static Date parseIsoDate(String rawValue) {
+        String normalized = rawValue.trim();
+
+        // SimpleDateFormat supports milliseconds, not arbitrary microseconds.
+        int dot = normalized.indexOf('.');
+        if (dot >= 0) {
+            int end = dot + 1;
+            while (end < normalized.length()
+                    && Character.isDigit(normalized.charAt(end))) {
+                end++;
+            }
+            String fraction = normalized.substring(dot + 1, end);
+            if (fraction.length() > 3) {
+                normalized = normalized.substring(0, dot + 1)
+                        + fraction.substring(0, 3)
+                        + normalized.substring(end);
+            } else if (fraction.length() < 3) {
+                StringBuilder padded = new StringBuilder(fraction);
+                while (padded.length() < 3) padded.append('0');
+                normalized = normalized.substring(0, dot + 1)
+                        + padded
+                        + normalized.substring(end);
+            }
+        }
+
+        String[] patterns = {
+                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS",
+                "yyyy-MM-dd'T'HH:mm:ss"
+        };
+
+        for (String pattern : patterns) {
+            try {
+                SimpleDateFormat parser = new SimpleDateFormat(pattern, Locale.US);
+                parser.setLenient(false);
+                if (!pattern.contains("XXX")) {
+                    parser.setTimeZone(TimeZone.getTimeZone("UTC"));
+                }
+                return parser.parse(normalized);
+            } catch (Exception ignored) {
+                // Try the next supported format.
+            }
+        }
+        return null;
+    }
+
+    private static void multilineCentered(
+            ByteArrayOutputStream out,
+            String value,
+            int width
+    ) throws Exception {
+        if (value == null || value.trim().isEmpty()) return;
+        String[] lines = value.replace("\r", "").split("\n");
+        for (String sourceLine : lines) {
+            String clean = printable(sourceLine).trim();
+            if (clean.isEmpty()) continue;
+            for (String part : wrapChunks(clean, width)) {
+                line(out, part);
+            }
+        }
+    }
+
+    private static List<String> wrapChunks(String value, int width) {
+        List<String> result = new ArrayList<>();
+        String remaining = printable(value).trim();
+        if (remaining.isEmpty()) return result;
+
+        while (remaining.length() > width) {
+            int cut = remaining.lastIndexOf(' ', width);
+            if (cut < Math.max(1, width / 2)) cut = width;
+            result.add(remaining.substring(0, cut).trim());
+            remaining = remaining.substring(cut).trim();
+        }
+        if (!remaining.isEmpty()) result.add(remaining);
+        return result;
+    }
+
+    private static String pretty(String rawValue) {
+        String clean = printable(rawValue)
+                .replace('_', ' ')
+                .replace('-', ' ')
+                .trim()
+                .replaceAll("\\s+", " ");
+        if (clean.isEmpty()) return "-";
+
+        StringBuilder result = new StringBuilder();
+        String[] words = clean.split(" ");
+        for (String word : words) {
+            if (word.isEmpty()) continue;
+            if (result.length() > 0) result.append(' ');
+            result.append(Character.toUpperCase(word.charAt(0)));
+            if (word.length() > 1) {
+                result.append(word.substring(1).toLowerCase(Locale.US));
+            }
+        }
+        return result.toString();
     }
 
     private static void command(ByteArrayOutputStream out, int... values) {
@@ -227,19 +500,22 @@ final class NetworkReceiptPrinter {
         out.write('\n');
     }
 
-    private static void wrapped(ByteArrayOutputStream out, String text, int width) throws Exception {
-        String remaining = printable(text).trim();
-        if (remaining.isEmpty()) return;
-        while (remaining.length() > width) {
-            int cut = remaining.lastIndexOf(' ', width);
-            if (cut < width / 2) cut = width;
-            line(out, remaining.substring(0, cut).trim());
-            remaining = remaining.substring(cut).trim();
+    private static void wrapped(
+            ByteArrayOutputStream out,
+            String text,
+            int width
+    ) throws Exception {
+        for (String part : wrapChunks(text, width)) {
+            line(out, part);
         }
-        if (!remaining.isEmpty()) line(out, remaining);
     }
 
-    private static void pair(ByteArrayOutputStream out, String left, String right, int width) throws Exception {
+    private static void pair(
+            ByteArrayOutputStream out,
+            String left,
+            String right,
+            int width
+    ) throws Exception {
         left = printable(left).trim();
         right = printable(right).trim();
         int spaces = width - left.length() - right.length();
@@ -269,13 +545,22 @@ final class NetworkReceiptPrinter {
 
     private static String repeat(char value, int count) {
         StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < Math.max(0, count); i++) builder.append(value);
+        for (int index = 0; index < Math.max(0, count); index++) {
+            builder.append(value);
+        }
         return builder.toString();
     }
 
     private static String padLeft(String value, int width) {
-        if (value.length() >= width) return value;
-        return repeat(' ', width - value.length()) + value;
+        String clean = printable(value);
+        if (clean.length() >= width) return clean.substring(0, width);
+        return repeat(' ', width - clean.length()) + clean;
+    }
+
+    private static String padRight(String value, int width) {
+        String clean = printable(value);
+        if (clean.length() >= width) return clean.substring(0, width);
+        return clean + repeat(' ', width - clean.length());
     }
 
     private static JSONObject object(JSONObject source, String key) {
@@ -291,7 +576,9 @@ final class NetworkReceiptPrinter {
             if (raw.startsWith("[")) {
                 try {
                     return new JSONArray(raw);
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) {
+                    // Try the next key.
+                }
             }
         }
         return new JSONArray();
@@ -300,7 +587,9 @@ final class NetworkReceiptPrinter {
     private static String first(JSONObject source, String... keys) {
         for (String key : keys) {
             String value = source.optString(key, "").trim();
-            if (!value.isEmpty() && !value.equalsIgnoreCase("null")) return value;
+            if (!value.isEmpty() && !value.equalsIgnoreCase("null")) {
+                return value;
+            }
         }
         return "";
     }
@@ -309,27 +598,59 @@ final class NetworkReceiptPrinter {
         for (String key : keys) {
             if (!source.has(key) || source.isNull(key)) continue;
             try {
-                return source.optDouble(key, Double.parseDouble(source.optString(key, "0")));
-            } catch (Exception ignored) {}
+                return source.optDouble(
+                        key,
+                        Double.parseDouble(source.optString(key, "0"))
+                );
+            } catch (Exception ignored) {
+                // Try the next key.
+            }
         }
         return 0;
     }
 
-    private static int integer(JSONObject source, int fallback, String... keys) {
+    private static int integer(
+            JSONObject source,
+            int fallback,
+            String... keys
+    ) {
         for (String key : keys) {
             if (!source.has(key) || source.isNull(key)) continue;
             try {
-                return source.optInt(key, Integer.parseInt(source.optString(key, String.valueOf(fallback))));
-            } catch (Exception ignored) {}
+                return source.optInt(
+                        key,
+                        Integer.parseInt(
+                                source.optString(key, String.valueOf(fallback))
+                        )
+                );
+            } catch (Exception ignored) {
+                // Try the next key.
+            }
         }
         return fallback;
     }
 
-    private static boolean bool(JSONObject source, boolean fallback, String... keys) {
+    private static boolean bool(
+            JSONObject source,
+            boolean fallback,
+            String... keys
+    ) {
         for (String key : keys) {
-            if (source.has(key) && !source.isNull(key)) return source.optBoolean(key, fallback);
+            if (source.has(key) && !source.isNull(key)) {
+                return source.optBoolean(key, fallback);
+            }
         }
         return fallback;
+    }
+
+    private static final class DateTimeParts {
+        final String date;
+        final String time;
+
+        DateTimeParts(String date, String time) {
+            this.date = date;
+            this.time = time;
+        }
     }
 
     private static final class Receipt {
@@ -343,7 +664,6 @@ final class NetworkReceiptPrinter {
         String headerText;
         String footerText;
         boolean showCustomerPhone;
-        boolean showCustomerAddress;
         boolean showPaymentMethod;
         boolean showItemPrices;
         boolean showOrderTotals;
@@ -352,8 +672,6 @@ final class NetworkReceiptPrinter {
         String orderType;
         String customerName;
         String customerPhone;
-        String customerAddress;
-        String customerNote;
         String paymentMethod;
         JSONArray items;
         double serviceFee;
@@ -361,7 +679,6 @@ final class NetworkReceiptPrinter {
         double deliveryCharge;
         double tipAmount;
         double totalAmount;
-        String copyLabel;
 
         static Receipt from(JSONObject root) {
             JSONObject printer = object(root, "printer");
@@ -371,52 +688,176 @@ final class NetworkReceiptPrinter {
 
             Receipt result = new Receipt();
             result.printerIp = first(printer, "ip");
-            if (result.printerIp.isEmpty()) result.printerIp = first(settings, "printer_ip", "printerIp");
+            if (result.printerIp.isEmpty()) {
+                result.printerIp = first(
+                        settings,
+                        "printer_ip",
+                        "printerIp"
+                );
+            }
+
             result.printerPort = integer(printer, 9100, "port");
-            if (printer.length() == 0) result.printerPort = integer(settings, 9100, "printer_port", "printerPort");
-            result.paperWidth = first(printer, "paperWidth", "paper_width");
-            if (result.paperWidth.isEmpty()) result.paperWidth = first(settings, "paper_width", "paperWidth");
-            if (!result.paperWidth.equals("58mm")) result.paperWidth = "80mm";
-            result.cutPaper = bool(printer, bool(settings, true, "cut_paper", "cutPaper"), "cutPaper", "cut_paper");
+            if (printer.length() == 0) {
+                result.printerPort = integer(
+                        settings,
+                        9100,
+                        "printer_port",
+                        "printerPort"
+                );
+            }
 
-            result.restaurantName = first(branding, "restaurantName", "restaurant_name");
-            if (result.restaurantName.isEmpty()) result.restaurantName = first(settings, "restaurant_name", "restaurantName");
-            if (result.restaurantName.isEmpty()) result.restaurantName = "Fai Fai Juice";
-            result.showLogo = bool(branding, bool(settings, false, "show_logo", "showLogo"), "showLogo", "show_logo");
+            result.paperWidth = first(
+                    printer,
+                    "paperWidth",
+                    "paper_width"
+            );
+            if (result.paperWidth.isEmpty()) {
+                result.paperWidth = first(
+                        settings,
+                        "paper_width",
+                        "paperWidth"
+                );
+            }
+            if (!result.paperWidth.equals("58mm")) {
+                result.paperWidth = "80mm";
+            }
+
+            result.cutPaper = bool(
+                    printer,
+                    bool(settings, true, "cut_paper", "cutPaper"),
+                    "cutPaper",
+                    "cut_paper"
+            );
+
+            result.restaurantName = first(
+                    branding,
+                    "restaurantName",
+                    "restaurant_name"
+            );
+            if (result.restaurantName.isEmpty()) {
+                result.restaurantName = first(
+                        settings,
+                        "restaurant_name",
+                        "restaurantName"
+                );
+            }
+            if (result.restaurantName.isEmpty()) {
+                result.restaurantName = "Fai Fai Juice";
+            }
+
+            result.showLogo = bool(
+                    branding,
+                    bool(settings, true, "show_logo", "showLogo"),
+                    "showLogo",
+                    "show_logo"
+            );
+
             result.logoUrl = first(branding, "logoUrl", "logo_url");
-            if (result.logoUrl.isEmpty()) result.logoUrl = first(settings, "logo_url", "logoUrl");
-            result.headerText = first(branding, "headerText", "header_text");
-            if (result.headerText.isEmpty()) result.headerText = first(settings, "header_text", "headerText");
-            result.footerText = first(branding, "footerText", "footer_text");
-            if (result.footerText.isEmpty()) result.footerText = first(settings, "footer_text", "footerText");
-            if (result.footerText.isEmpty()) result.footerText = "Thank you for your order!";
+            if (result.logoUrl.isEmpty()) {
+                result.logoUrl = first(settings, "logo_url", "logoUrl");
+            }
+            if (result.logoUrl.isEmpty()) {
+                result.logoUrl = DEFAULT_LOGO_URL;
+            }
 
-            result.showCustomerPhone = bool(branding, bool(settings, true, "show_customer_phone"), "showCustomerPhone");
-            result.showCustomerAddress = bool(branding, bool(settings, true, "show_customer_address"), "showCustomerAddress");
-            result.showPaymentMethod = bool(branding, bool(settings, true, "show_payment_method"), "showPaymentMethod");
-            result.showItemPrices = bool(branding, bool(settings, true, "show_item_prices"), "showItemPrices");
-            result.showOrderTotals = bool(branding, bool(settings, true, "show_order_totals"), "showOrderTotals");
+            result.headerText = first(
+                    branding,
+                    "headerText",
+                    "header_text"
+            );
+            if (result.headerText.isEmpty()) {
+                result.headerText = first(
+                        settings,
+                        "header_text",
+                        "headerText"
+                );
+            }
+            if (result.headerText.isEmpty()) {
+                result.headerText = "Murbah, Fujairah, UAE\n052 3187415";
+            }
+
+            result.footerText = first(
+                    branding,
+                    "footerText",
+                    "footer_text"
+            );
+            if (result.footerText.isEmpty()) {
+                result.footerText = first(
+                        settings,
+                        "footer_text",
+                        "footerText"
+                );
+            }
+            if (result.footerText.isEmpty()) {
+                result.footerText = "Thank you for ordering from Fai Fai Juice!";
+            }
+
+            result.showCustomerPhone = bool(
+                    branding,
+                    bool(settings, true, "show_customer_phone"),
+                    "showCustomerPhone"
+            );
+            result.showPaymentMethod = bool(
+                    branding,
+                    bool(settings, true, "show_payment_method"),
+                    "showPaymentMethod"
+            );
+            result.showItemPrices = bool(
+                    branding,
+                    bool(settings, true, "show_item_prices"),
+                    "showItemPrices"
+            );
+            result.showOrderTotals = bool(
+                    branding,
+                    bool(settings, true, "show_order_totals"),
+                    "showOrderTotals"
+            );
 
             result.orderId = first(order, "id", "order_id");
-            result.createdAt = first(order, "createdAt", "created_at", "order_time");
+            result.createdAt = first(
+                    order,
+                    "createdAt",
+                    "created_at",
+                    "order_time"
+            );
             result.orderType = first(order, "type", "order_type");
-            result.customerName = first(order, "customerName", "customer_name");
-            result.customerPhone = first(order, "customerPhone", "customer_phone");
-            result.customerAddress = first(order, "customerAddress", "delivery_address", "address");
-            result.customerNote = first(order, "customerNote", "customer_note", "order_notes", "notes");
-            result.paymentMethod = first(order, "paymentMethod", "payment_method");
+            result.customerName = first(
+                    order,
+                    "customerName",
+                    "customer_name"
+            );
+            result.customerPhone = first(
+                    order,
+                    "customerPhone",
+                    "customer_phone"
+            );
+            result.paymentMethod = first(
+                    order,
+                    "paymentMethod",
+                    "payment_method"
+            );
             result.items = array(order, "items", "items_json");
             result.serviceFee = number(order, "serviceFee", "service_fee");
-            result.smallOrderFee = number(order, "smallOrderFee", "small_order_fee");
-            result.deliveryCharge = number(order, "deliveryCharge", "delivery_charge");
+            result.smallOrderFee = number(
+                    order,
+                    "smallOrderFee",
+                    "small_order_fee"
+            );
+            result.deliveryCharge = number(
+                    order,
+                    "deliveryCharge",
+                    "delivery_charge"
+            );
             result.tipAmount = number(order, "tipAmount", "tip_amount");
-            result.totalAmount = number(order, "totalAmount", "total_amount", "grand_total");
+            result.totalAmount = number(
+                    order,
+                    "totalAmount",
+                    "total_amount",
+                    "grand_total"
+            );
 
-            result.copyLabel = first(root, "copy_label");
-            if (result.copyLabel.isEmpty()) {
-                String mode = first(root, "mode");
-                result.copyLabel = mode.equalsIgnoreCase("reprint") ? "REPRINT / COPY" : "KITCHEN COPY";
-            }
+            // copy_label is deliberately ignored. No KITCHEN COPY or
+            // REPRINT / COPY text is printed on the new receipt.
             return result;
         }
     }
