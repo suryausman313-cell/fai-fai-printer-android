@@ -1,5 +1,6 @@
 package com.faifai.printer;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -33,7 +34,7 @@ final class NetworkReceiptPrinter {
 
     private NetworkReceiptPrinter() {}
 
-    static void print(String payloadJson) throws Exception {
+    static void print(Context context, String payloadJson) throws Exception {
         JSONObject root = new JSONObject(payloadJson);
         Receipt receipt = Receipt.from(root);
 
@@ -41,7 +42,7 @@ final class NetworkReceiptPrinter {
             throw new IllegalArgumentException("Printer IP is missing");
         }
 
-        byte[] data = render(receipt);
+        byte[] data = render(context, receipt);
         try (Socket socket = new Socket()) {
             socket.connect(
                     new InetSocketAddress(receipt.printerIp, receipt.printerPort),
@@ -55,19 +56,20 @@ final class NetworkReceiptPrinter {
         }
     }
 
-    private static byte[] render(Receipt receipt) throws Exception {
+    private static byte[] render(Context context, Receipt receipt) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         boolean is58mm = receipt.paperWidth.equals("58mm");
         int width = is58mm ? 32 : 48;
         int paperDots = is58mm ? 384 : 576;
-        int logoDots = is58mm ? 150 : 210;
+        int logoDots = is58mm ? 145 : 185;
 
         command(out, 0x1B, 0x40); // ESC @ - initialize printer
+        command(out, 0x1B, 0x33, 24); // comfortable line spacing
         align(out, 1);
 
         if (receipt.showLogo) {
             try {
-                Bitmap logo = loadLogo(receipt.logoUrl);
+                Bitmap logo = loadLogo(context, receipt.logoUrl);
                 if (logo != null) {
                     rasterImageCentered(out, logo, paperDots, logoDots);
                     line(out, "");
@@ -78,29 +80,30 @@ final class NetworkReceiptPrinter {
             }
         }
 
+        // Clear, compact heading similar to a professional POS receipt.
         bold(out, true);
-        size(out, 2);
-        line(out, receipt.restaurantName);
-        size(out, 0);
+        textScale(out, 0x10); // double-height only; keeps full paper width
+        line(out, receipt.restaurantName.toUpperCase(Locale.US));
+        textScale(out, 0x00);
         bold(out, false);
 
         multilineCentered(out, receipt.headerText, width);
-        line(out, repeat('=', width));
+        line(out, repeat('-', width));
 
         bold(out, true);
-        size(out, 1);
+        textScale(out, 0x11); // double width + height for order number
         line(out, "ORDER #" + receipt.orderId);
-        size(out, 0);
+        textScale(out, 0x00);
         bold(out, false);
 
         DateTimeParts dateTime = formatDateTime(receipt.createdAt);
 
         align(out, 0);
-        pair(out, "Date", dateTime.date, width);
-        pair(out, "Time", dateTime.time, width);
-        pair(out, "Order Type", pretty(receipt.orderType), width);
+        detailPair(out, "Date", dateTime.date, width);
+        detailPair(out, "Time", dateTime.time, width);
+        detailPair(out, "Order Type", pretty(receipt.orderType), width);
         if (receipt.showPaymentMethod && !receipt.paymentMethod.isEmpty()) {
-            pair(out, "Payment", pretty(receipt.paymentMethod), width);
+            detailPair(out, "Payment", pretty(receipt.paymentMethod), width);
         }
 
         line(out, repeat('-', width));
@@ -118,6 +121,13 @@ final class NetworkReceiptPrinter {
 
         if (receipt.showOrderTotals) {
             line(out, repeat('-', width));
+
+            if (receipt.subtotalAmount > 0) {
+                pair(out, "Subtotal", money(receipt.subtotalAmount), width);
+            }
+            if (receipt.discountAmount > 0) {
+                pair(out, "Discount", "-" + money(receipt.discountAmount), width);
+            }
             if (receipt.serviceFee > 0) {
                 pair(out, "Service Fee", money(receipt.serviceFee), width);
             }
@@ -131,11 +141,11 @@ final class NetworkReceiptPrinter {
                 pair(out, "Tip", money(receipt.tipAmount), width);
             }
 
-            line(out, repeat('=', width));
+            line(out, repeat('-', width));
             bold(out, true);
-            size(out, 1);
-            pair(out, "GRAND TOTAL", money(receipt.totalAmount), width);
-            size(out, 0);
+            textScale(out, 0x10); // taller, bold total without breaking one line
+            pair(out, "TOTAL", money(receipt.totalAmount), width);
+            textScale(out, 0x00);
             bold(out, false);
         }
 
@@ -226,7 +236,15 @@ final class NetworkReceiptPrinter {
         }
     }
 
-    private static Bitmap loadLogo(String rawSource) throws Exception {
+    private static Bitmap loadLogo(Context context, String rawSource) throws Exception {
+        // The receipt logo is bundled inside the APK, so printing does not
+        // depend on internet, Cloudflare cache, or an Admin-uploaded URL.
+        Bitmap bundled = BitmapFactory.decodeResource(
+                context.getResources(),
+                R.drawable.fai_fai_receipt_logo
+        );
+        if (bundled != null) return bundled;
+
         String source = resolveLogoSource(rawSource);
 
         if (source.startsWith("data:image/")) {
@@ -490,8 +508,7 @@ final class NetworkReceiptPrinter {
         command(out, 0x1B, 0x45, enabled ? 1 : 0);
     }
 
-    private static void size(ByteArrayOutputStream out, int value) {
-        int mode = value == 2 ? 0x22 : value == 1 ? 0x11 : 0x00;
+    private static void textScale(ByteArrayOutputStream out, int mode) {
         command(out, 0x1D, 0x21, mode);
     }
 
@@ -508,6 +525,18 @@ final class NetworkReceiptPrinter {
         for (String part : wrapChunks(text, width)) {
             line(out, part);
         }
+    }
+
+    private static void detailPair(
+            ByteArrayOutputStream out,
+            String label,
+            String value,
+            int width
+    ) throws Exception {
+        String left = printable(label).trim() + ":";
+        bold(out, true);
+        pair(out, left, value, width);
+        bold(out, false);
     }
 
     private static void pair(
@@ -674,6 +703,8 @@ final class NetworkReceiptPrinter {
         String customerPhone;
         String paymentMethod;
         JSONArray items;
+        double subtotalAmount;
+        double discountAmount;
         double serviceFee;
         double smallOrderFee;
         double deliveryCharge;
@@ -837,6 +868,19 @@ final class NetworkReceiptPrinter {
                     "payment_method"
             );
             result.items = array(order, "items", "items_json");
+            result.subtotalAmount = number(
+                    order,
+                    "subtotalAmount",
+                    "subtotal_amount",
+                    "food_subtotal",
+                    "subtotal"
+            );
+            result.discountAmount = number(
+                    order,
+                    "discountAmount",
+                    "discount_amount",
+                    "discount"
+            );
             result.serviceFee = number(order, "serviceFee", "service_fee");
             result.smallOrderFee = number(
                     order,
