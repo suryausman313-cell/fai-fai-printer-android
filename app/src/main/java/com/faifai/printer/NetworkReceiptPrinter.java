@@ -67,7 +67,7 @@ final class NetworkReceiptPrinter {
         command(out, 0x1B, 0x33, 24); // comfortable line spacing
         align(out, 1);
 
-        if (receipt.showLogo) {
+        {
             try {
                 Bitmap logo = loadLogo(context, receipt.logoUrl);
                 if (logo != null) {
@@ -80,11 +80,10 @@ final class NetworkReceiptPrinter {
             }
         }
 
-        // Clear, compact heading similar to a professional POS receipt.
+        // Compact bold heading, similar to a clean POS receipt.
         bold(out, true);
-        textScale(out, 0x10); // double-height only; keeps full paper width
-        line(out, receipt.restaurantName.toUpperCase(Locale.US));
         textScale(out, 0x00);
+        line(out, receipt.restaurantName);
         bold(out, false);
 
         multilineCentered(out, receipt.headerText, width);
@@ -262,7 +261,7 @@ final class NetworkReceiptPrinter {
         connection.setConnectTimeout(8000);
         connection.setReadTimeout(12000);
         connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.3");
+        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.5");
 
         try {
             int status = connection.getResponseCode();
