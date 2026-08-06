@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.4");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
@@ -142,7 +142,7 @@ public class MainActivity extends Activity {
 
             printerExecutor.execute(() -> {
                 try {
-                    NetworkReceiptPrinter.print(payloadJson);
+                    NetworkReceiptPrinter.print(MainActivity.this, payloadJson);
                     showToast("Receipt printed");
                 } catch (Exception error) {
                     String message = error.getMessage();
