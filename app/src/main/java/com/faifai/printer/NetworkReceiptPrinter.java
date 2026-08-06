@@ -64,7 +64,9 @@ final class NetworkReceiptPrinter {
         int logoDots = is58mm ? 145 : 185;
 
         command(out, 0x1B, 0x40); // ESC @ - initialize printer
-        command(out, 0x1B, 0x33, 24); // comfortable line spacing
+        command(out, 0x1B, 0x4D, 0x00); // ESC M 0 - Font A (clearer, Napoli-style)
+        command(out, 0x1B, 0x33, 30); // open, easy-to-read line spacing
+        doubleStrike(out, true); // darker single-width text across the receipt
         align(out, 1);
 
         {
@@ -80,13 +82,14 @@ final class NetworkReceiptPrinter {
             }
         }
 
-        // Compact bold heading, similar to a clean POS receipt.
+        // Clean heading with comfortable vertical spacing.
         bold(out, true);
         textScale(out, 0x00);
         line(out, receipt.restaurantName);
         bold(out, false);
 
         multilineCentered(out, receipt.headerText, width);
+        line(out, "");
         line(out, repeat('-', width));
 
         bold(out, true);
@@ -94,6 +97,7 @@ final class NetworkReceiptPrinter {
         line(out, "ORDER #" + receipt.orderId);
         textScale(out, 0x00);
         bold(out, false);
+        line(out, "");
 
         DateTimeParts dateTime = formatDateTime(receipt.createdAt);
 
@@ -105,21 +109,28 @@ final class NetworkReceiptPrinter {
             detailPair(out, "Payment", pretty(receipt.paymentMethod), width);
         }
 
+        line(out, "");
         line(out, repeat('-', width));
+
+        bold(out, true);
+        line(out, "CUSTOMER DETAILS");
+        bold(out, false);
+        line(out, "");
+
         if (!receipt.customerName.isEmpty()) {
-            bold(out, true);
-            wrapped(out, "Customer: " + receipt.customerName, width);
-            bold(out, false);
+            detailPair(out, "Name", receipt.customerName, width);
         }
         if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
-            wrapped(out, "Phone: " + receipt.customerPhone, width);
+            detailPair(out, "Phone", receipt.customerPhone, width);
         }
 
+        line(out, "");
         line(out, repeat('-', width));
         printItems(out, receipt, width);
 
         if (receipt.showOrderTotals) {
             line(out, repeat('-', width));
+            line(out, "");
 
             if (receipt.subtotalAmount > 0) {
                 pair(out, "Subtotal", money(receipt.subtotalAmount), width);
@@ -140,20 +151,25 @@ final class NetworkReceiptPrinter {
                 pair(out, "Tip", money(receipt.tipAmount), width);
             }
 
-            line(out, repeat('-', width));
+            line(out, "");
+            line(out, repeat('=', width));
             bold(out, true);
             textScale(out, 0x10); // taller, bold total without breaking one line
             pair(out, "TOTAL", money(receipt.totalAmount), width);
             textScale(out, 0x00);
             bold(out, false);
+            line(out, repeat('=', width));
+            line(out, "");
         }
 
         align(out, 1);
-        line(out, repeat('-', width));
         multilineCentered(out, receipt.footerText, width);
-        line(out, "");
-        line(out, "");
-        line(out, "");
+
+        // Feed enough paper after the footer so the last line is fully visible
+        // and the cutter leaves a clean bottom margin.
+        command(out, 0x1B, 0x64, 4); // ESC d 4 - feed four lines
+
+        doubleStrike(out, false);
 
         if (receipt.cutPaper) {
             command(out, 0x1D, 0x56, 0x00);
@@ -232,7 +248,15 @@ final class NetworkReceiptPrinter {
                     wrapped(out, "     + " + extraText, width);
                 }
             }
+
+            // A small gap keeps each ordered item visually separate.
+            if (index < receipt.items.length() - 1) {
+                line(out, "");
+            }
         }
+
+        // Keep totals from touching the last item.
+        line(out, "");
     }
 
     private static Bitmap loadLogo(Context context, String rawSource) throws Exception {
@@ -261,7 +285,7 @@ final class NetworkReceiptPrinter {
         connection.setConnectTimeout(8000);
         connection.setReadTimeout(12000);
         connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.5");
+        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.7");
 
         try {
             int status = connection.getResponseCode();
@@ -505,6 +529,10 @@ final class NetworkReceiptPrinter {
 
     private static void bold(ByteArrayOutputStream out, boolean enabled) {
         command(out, 0x1B, 0x45, enabled ? 1 : 0);
+    }
+
+    private static void doubleStrike(ByteArrayOutputStream out, boolean enabled) {
+        command(out, 0x1B, 0x47, enabled ? 1 : 0);
     }
 
     private static void textScale(ByteArrayOutputStream out, int mode) {
