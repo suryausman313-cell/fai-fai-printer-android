@@ -16,6 +16,7 @@ import java.util.concurrent.*;
 
 public class KitchenOrderService extends Service {
     public static final String ACTION_START = "com.faifai.printer.START";
+    public static final String ACTION_STOP_ALARM = "com.faifai.printer.STOP_ALARM";
     private static final String CHANNEL_ACTIVE = "kitchen_active";
     private static final String CHANNEL_ORDER = "kitchen_admin_ring_v1";
     private static final String API = "https://vita-napoli-backend-usman.onrender.com/api/v1/kitchen/orders?status=new&limit=10";
@@ -119,7 +120,13 @@ public class KitchenOrderService extends Service {
         getSystemService(NotificationManager.class).cancel(42);
         if (alarm != null) { try { alarm.stop(); } catch (Exception ignored) {} alarm.release(); alarm = null; }
     }
-    @Override public int onStartCommand(Intent i, int f, int id) { return START_STICKY; }
+    @Override public int onStartCommand(Intent i, int f, int id) {
+        if (i != null && ACTION_STOP_ALARM.equals(i.getAction())) {
+            stopAlarm();
+            return START_STICKY;
+        }
+        return START_STICKY;
+    }
     @Override public void onDestroy() { worker.shutdownNow(); stopAlarm(); super.onDestroy(); }
     @Override public android.os.IBinder onBind(Intent intent) { return null; }
 }
