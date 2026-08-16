@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.4");
+        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.0");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
@@ -130,6 +130,14 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void stopOrderAlarm() {
+            Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
+        }
+
+        @JavascriptInterface
         public boolean isAvailable() {
             return true;
         }
@@ -142,7 +150,7 @@ public class MainActivity extends Activity {
 
             printerExecutor.execute(() -> {
                 try {
-                    NetworkReceiptPrinter.print(MainActivity.this, payloadJson);
+                    NetworkReceiptPrinter.print(payloadJson);
                     showToast("Receipt printed");
                 } catch (Exception error) {
                     String message = error.getMessage();
