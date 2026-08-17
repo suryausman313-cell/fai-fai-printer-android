@@ -56,6 +56,32 @@ final class NetworkReceiptPrinter {
         }
     }
 
+    static boolean hasPrinterIp(String payloadJson) {
+        try {
+            Receipt receipt = Receipt.from(new JSONObject(payloadJson));
+            return receipt.printerIp != null && !receipt.printerIp.trim().isEmpty();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Render the same Fai Fai receipt for a local ESC/POS printer.
+     * force58mm keeps the handheld receipt within the P58 paper width.
+     * allowCut is false for handheld printers that do not have an auto cutter.
+     */
+    static byte[] renderReceipt(
+            Context context,
+            String payloadJson,
+            boolean force58mm,
+            boolean allowCut
+    ) throws Exception {
+        Receipt receipt = Receipt.from(new JSONObject(payloadJson));
+        if (force58mm) receipt.paperWidth = "58mm";
+        if (!allowCut) receipt.cutPaper = false;
+        return render(context, receipt);
+    }
+
     private static byte[] render(Context context, Receipt receipt) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         boolean is58mm = receipt.paperWidth.equals("58mm");

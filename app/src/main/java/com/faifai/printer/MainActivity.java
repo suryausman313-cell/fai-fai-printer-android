@@ -1,15 +1,15 @@
 package com.faifai.printer;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.os.Bundle;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.content.Intent;
-import android.Manifest;
-import android.content.pm.PackageManager;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -18,24 +18,27 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.webkit.WebResourceRequest;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final String KITCHEN_URL = "https://fai-fai-juice.pages.dev/kitchen";
+    private static final int PERMISSION_REQUEST = 54;
 
     private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
     private WebView webView;
     private final Handler syncHandler = new Handler(Looper.getMainLooper());
+
     private final Runnable syncKitchen = new Runnable() {
         @Override public void run() {
             if (webView != null) {
                 webView.evaluateJavascript(
-                    "(function(){try{return JSON.stringify({pin:localStorage.getItem('kitchen_pin')||'',sound:localStorage.getItem('kitchen_sound')!=='false'});}catch(e){return '{}';}})()",
-                    value -> new PrinterBridge().configureKitchen(value)
+                        "(function(){try{return JSON.stringify({pin:localStorage.getItem('kitchen_pin')||'',sound:localStorage.getItem('kitchen_sound')!=='false'});}catch(e){return '{}';}})()",
+                        value -> new PrinterBridge().configureKitchen(value)
                 );
             }
             syncHandler.postDelayed(this, 5000);
@@ -46,10 +49,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 54);
-        }
+        requestRequiredPermissions();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         webView = new WebView(this);
@@ -67,7 +67,9 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.0");
+        settings.setUserAgentString(
+                settings.getUserAgentString() + " FaiFaiPrinter/1.8"
+        );
 
         webView.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
@@ -81,6 +83,39 @@ public class MainActivity extends Activity {
 
         setContentView(webView);
         webView.loadUrl(KITCHEN_URL);
+    }
+
+    private void requestRequiredPermissions() {
+        if (Build.VERSION.SDK_INT < 31) {
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        PERMISSION_REQUEST
+                );
+            }
+            return;
+        }
+
+        List<String> missing = new ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.BLUETOOTH_SCAN);
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        if (!missing.isEmpty()) {
+            requestPermissions(missing.toArray(new String[0]), PERMISSION_REQUEST);
+        }
     }
 
     @Override
@@ -107,24 +142,42 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
     }
 
+    private void startKitchenService(Intent service) {
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(service);
+        } else {
+            startService(service);
+        }
+    }
+
     public final class PrinterBridge {
         @JavascriptInterface
         public void configureKitchen(String rawJson) {
             String json = rawJson == null ? "" : rawJson;
             if (json.startsWith("\"") && json.endsWith("\"")) {
                 json = json.substring(1, json.length() - 1)
-                        .replace("\\\"", "\"").replace("\\\\", "\\");
+                        .replace("\\\"", "\"")
+                        .replace("\\\\", "\\");
             }
+
             try {
                 org.json.JSONObject data = new org.json.JSONObject(json);
                 String pin = data.optString("pin", "").trim();
                 boolean sound = data.optBoolean("sound", true);
-                getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE).edit()
-                        .putString("pin", pin).putBoolean("sound", sound).apply();
+
+                getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
+                        .edit()
+                        .putString("pin", pin)
+                        .putBoolean("sound", sound)
+                        .apply();
+
                 if (pin.length() >= 4) {
-                    Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
+                    Intent service = new Intent(
+                            MainActivity.this,
+                            KitchenOrderService.class
+                    );
                     service.setAction(KitchenOrderService.ACTION_START);
-                    startForegroundService(service);
+                    startKitchenService(service);
                 }
             } catch (Exception ignored) { }
         }
@@ -133,13 +186,17 @@ public class MainActivity extends Activity {
         public void stopOrderAlarm() {
             Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
             service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
-            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
-            else startService(service);
+            startKitchenService(service);
         }
 
         @JavascriptInterface
         public boolean isAvailable() {
             return true;
+        }
+
+        @JavascriptInterface
+        public String printerStatus(String payloadJson) {
+            return PrinterRouter.status(MainActivity.this, payloadJson == null ? "{}" : payloadJson);
         }
 
         @JavascriptInterface
@@ -150,8 +207,8 @@ public class MainActivity extends Activity {
 
             printerExecutor.execute(() -> {
                 try {
-                    NetworkReceiptPrinter.print(payloadJson);
-                    showToast("Receipt printed");
+                    String route = PrinterRouter.print(MainActivity.this, payloadJson);
+                    showToast("Receipt printed - " + route);
                 } catch (Exception error) {
                     String message = error.getMessage();
                     if (message == null || message.trim().isEmpty()) {
