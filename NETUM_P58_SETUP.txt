@@ -1,0 +1,40 @@
+FAI FAI KITCHEN ANDROID 1.8.0 — NETUM P58 PREPARED BUILD
+
+WHAT CHANGED
+- Fixed the existing MainActivity/NetworkReceiptPrinter call mismatch.
+- Android 7.x service start is now safe; Android 8+ still uses foreground service.
+- Added NETUM/P58 device detection.
+- Added local 58mm Bluetooth ESC/POS printing attempt for P58 handhelds.
+- Existing network/IP printer remains as automatic backup.
+- Built-in/local receipts are forced to 58mm and cutter command is disabled.
+- Added Bluetooth permissions for Android 12+ while keeping Android 11 simple.
+- Version bumped from 1.7.0 to 1.8.0.
+
+IMPORTANT ABOUT THE NETUM BUILT-IN PRINTER
+NETUM officially publishes a "Mobile POS Printer SDK" for P58. That SDK archive is
+not included in this project because its binary was not available in the supplied
+project and the vendor download host could not be fetched in this build session.
+
+This 1.8.0 build tries the P58 local printer over paired Bluetooth ESC/POS first.
+If the specific P58 firmware exposes the built-in printer that way, it prints
+without a printer IP. If that firmware only allows printing through NETUM's
+vendor SDK, the app will show a clear message saying the NETUM SDK is required,
+and the existing network printer path will still work.
+
+WHEN THE DEVICE ARRIVES
+1. Install the APK.
+2. Open Bluetooth settings once and check whether a P58/NETUM/POS/Printer device
+   is already paired. If it is, the app will auto-select it.
+3. Open Kitchen and print one test order.
+4. If the device reports that the NETUM SDK is required, add the official
+   PDA-58_SDK.zip / AAR/JAR from NETUM and integrate its exact API in PrinterRouter.
+   No Fai Fai customer/admin/rider/backend changes are required for that step.
+
+GITHUB PATHS CHANGED
+app/build.gradle
+app/src/main/AndroidManifest.xml
+app/src/main/java/com/faifai/printer/MainActivity.java
+app/src/main/java/com/faifai/printer/NetworkReceiptPrinter.java
+app/src/main/java/com/faifai/printer/BluetoothReceiptPrinter.java   (NEW)
+app/src/main/java/com/faifai/printer/PrinterRouter.java             (NEW)
+NETUM_P58_SETUP.txt                                                  (NEW)
