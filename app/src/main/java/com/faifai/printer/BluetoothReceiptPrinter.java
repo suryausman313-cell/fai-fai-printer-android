@@ -2,6 +2,7 @@ package com.faifai.printer;
 
 import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
@@ -107,8 +108,18 @@ final class BluetoothReceiptPrinter {
             if (name.contains("netum")) score += 80;
             if (name.contains("printer")) score += 60;
             if (name.contains("thermal")) score += 50;
+            if (name.contains("inner") || name.contains("built-in") || name.contains("builtin")) score += 70;
             if (name.contains("pos")) score += 35;
+            if (name.contains("esc") || name.contains("mpt") || name.contains("rpp")) score += 35;
             if (name.contains("58")) score += 15;
+
+            try {
+                BluetoothClass bluetoothClass = device.getBluetoothClass();
+                if (bluetoothClass != null
+                        && bluetoothClass.getMajorDeviceClass() == BluetoothClass.Device.Major.IMAGING) {
+                    score += 45;
+                }
+            } catch (Exception ignored) { }
 
             // Avoid accidentally sending raw ESC/POS bytes to obvious audio devices.
             if (name.contains("buds") || name.contains("airpod")

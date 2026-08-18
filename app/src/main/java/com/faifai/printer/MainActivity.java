@@ -67,8 +67,18 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+
+        // NETUM/P58 has a narrow POS screen. Keep the Kitchen page readable but
+        // slightly more compact without changing the public web app on other devices.
+        float widthDp = getResources().getDisplayMetrics().widthPixels
+                / getResources().getDisplayMetrics().density;
+        settings.setTextZoom(widthDp <= 600f ? 85 : 100);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+
         settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiKitchen/1.9"
+                settings.getUserAgentString() + " FaiFaiKitchen/1.9.1"
         );
 
         webView.setWebViewClient(new WebViewClient() {

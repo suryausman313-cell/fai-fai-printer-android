@@ -13,45 +13,37 @@ final class PrinterRouter {
 
     static String print(Context context, String payloadJson) throws Exception {
         boolean p58 = looksLikeP58Device();
-        String bluetoothFailure = "";
+        String localFailure = "";
 
-        // On the NETUM/P58 handheld, prefer its local 58mm printer path.
-        if (p58) {
-            try {
-                String printerName = BluetoothReceiptPrinter.print(context, payloadJson);
-                return "Built-in 58mm (" + printerName + ")";
-            } catch (Exception error) {
-                bluetoothFailure = message(error);
-            }
+        // IMPORTANT: Kitchen runs on a NETUM handheld with its own 58mm printer.
+        // Always try the local/paired ESC/POS path BEFORE any configured IP printer.
+        // Older builds only did this when Android Build.MODEL contained "P58"; many
+        // NETUM firmwares report a generic model, so they incorrectly printed to IP.
+        try {
+            String printerName = BluetoothReceiptPrinter.print(context, payloadJson);
+            return "Local 58mm (" + printerName + ")";
+        } catch (Exception error) {
+            localFailure = message(error);
         }
 
-        // Existing shop/network printer remains fully supported as backup.
+        // Keep the shop/network printer as a safe backup only when local printing
+        // is unavailable. Existing IP printing therefore never gets broken.
         if (NetworkReceiptPrinter.hasPrinterIp(payloadJson)) {
             NetworkReceiptPrinter.print(context, payloadJson);
-            return "Network printer";
-        }
-
-        // If a non-P58 device has a paired ESC/POS printer, use it too.
-        if (!p58) {
-            try {
-                String printerName = BluetoothReceiptPrinter.print(context, payloadJson);
-                return "Bluetooth 58mm (" + printerName + ")";
-            } catch (Exception error) {
-                bluetoothFailure = message(error);
-            }
+            return "Network printer (local unavailable: " + localFailure + ")";
         }
 
         if (p58) {
             throw new IllegalStateException(
-                    "P58 detected, but its built-in printer is not exposed as a paired Bluetooth printer. "
-                            + "NETUM Mobile POS Printer SDK is required for direct built-in printing."
-                            + (bluetoothFailure.isEmpty() ? "" : " Bluetooth: " + bluetoothFailure)
+                    "NETUM/P58 local printer was not found. Pair/enable the local 58mm printer "
+                            + "or integrate NETUM Mobile POS Printer SDK."
+                            + (localFailure.isEmpty() ? "" : " Local: " + localFailure)
             );
         }
 
         throw new IllegalStateException(
-                "No printer available. Set a network printer IP or pair a 58mm ESC/POS printer."
-                        + (bluetoothFailure.isEmpty() ? "" : " Bluetooth: " + bluetoothFailure)
+                "No printer available. Local 58mm: " + localFailure
+                        + ". Configure a network printer only as backup."
         );
     }
 
