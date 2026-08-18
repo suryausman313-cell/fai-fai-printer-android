@@ -35,12 +35,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <!-- Separate HOME alias lets Admin PIN temporarily return to the normal
+             Android launcher without disabling the Kitchen activity itself. -->
+        <activity-alias
+            android:name=".KioskHomeActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-        </activity>
+        </activity-alias>
         <service
             android:name=".KitchenOrderService"
             android:exported="false"
