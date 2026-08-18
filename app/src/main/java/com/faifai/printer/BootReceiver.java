@@ -12,9 +12,8 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
-        // Restore dedicated-device HOME/lock-task policies after every reboot.
-        // When provisioned as Device Owner this makes Fai Fai Kitchen the HOME
-        // app again even if an administrator temporarily exited kiosk earlier.
+        // Restore Device Owner / Lock Task allow-list after every reboot and
+        // clean any persistent HOME preference left by older builds.
         boolean kioskReady = KioskManager.applyPolicies(context);
 
         String pin = context.getSharedPreferences("fai_fai_kitchen", Context.MODE_PRIVATE)
@@ -33,8 +32,8 @@ public class BootReceiver extends BroadcastReceiver {
             }
         }
 
-        // Older dedicated NETUM terminals allow activity launch from boot. On
-        // newer Android versions the persistent HOME policy is the primary path.
+        // Device Owner apps are allowed to bring their dedicated UI up after
+        // boot on the NETUM terminal. MainActivity enters Lock Task in onResume.
         if (kioskReady) {
             try {
                 Intent launch = new Intent(context, MainActivity.class);

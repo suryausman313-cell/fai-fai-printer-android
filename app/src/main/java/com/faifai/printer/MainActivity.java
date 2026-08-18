@@ -7,20 +7,31 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.text.InputType;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
@@ -34,8 +45,30 @@ public class MainActivity extends Activity {
 
     private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
     private WebView webView;
+    private TextView connectionStatus;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler syncHandler = new Handler(Looper.getMainLooper());
+    private final Handler webHandler = new Handler(Looper.getMainLooper());
     private boolean backLongPressHandled = false;
+    private boolean mainFrameFailed = false;
+    private boolean kitchenPageReady = false;
+    private boolean destroyed = false;
+
+    private final Runnable retryKitchenPage = new Runnable() {
+        @Override public void run() {
+            if (destroyed || webView == null || kitchenPageReady) return;
+            if (!isNetworkOnline()) {
+                showConnectionStatus("No internet. Reconnecting...");
+                scheduleKitchenRetry(5000);
+                return;
+            }
+            showConnectionStatus("Connecting to Fai Fai Kitchen...");
+            mainFrameFailed = false;
+            webView.stopLoading();
+            webView.loadUrl(KITCHEN_URL);
+        }
+    };
 
     private final Runnable syncKitchen = new Runnable() {
         @Override public void run() {
@@ -82,25 +115,175 @@ public class MainActivity extends Activity {
         settings.setDisplayZoomControls(false);
 
         settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiKitchen/1.9.1"
+                settings.getUserAgentString() + " FaiFaiKitchen/1.12.0"
         );
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                if (url != null && url.contains("fai-fai-juice.pages.dev")) {
+                    kitchenPageReady = false;
+                    mainFrameFailed = false;
+                    showConnectionStatus("Loading Fai Fai Kitchen...");
+                }
+            }
+
             @Override public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                syncHandler.removeCallbacks(syncKitchen);
-                syncHandler.post(syncKitchen);
+                if (!mainFrameFailed && url != null && url.contains("fai-fai-juice.pages.dev")) {
+                    kitchenPageReady = true;
+                    webHandler.removeCallbacks(retryKitchenPage);
+                    hideConnectionStatus();
+                    syncHandler.removeCallbacks(syncKitchen);
+                    syncHandler.post(syncKitchen);
+                }
+            }
+
+            @Override public void onReceivedError(
+                    WebView view,
+                    WebResourceRequest request,
+                    WebResourceError error
+            ) {
+                super.onReceivedError(view, request, error);
+                if (request != null && request.isForMainFrame()) {
+                    mainFrameFailed = true;
+                    kitchenPageReady = false;
+                    String message = isNetworkOnline()
+                            ? "Kitchen page did not load. Retrying..."
+                            : "No internet. Reconnecting...";
+                    showConnectionStatus(message);
+                    scheduleKitchenRetry(3000);
+                }
+            }
+
+            @Override public void onReceivedHttpError(
+                    WebView view,
+                    WebResourceRequest request,
+                    WebResourceResponse errorResponse
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse);
+                if (request != null && request.isForMainFrame() && errorResponse != null) {
+                    mainFrameFailed = true;
+                    kitchenPageReady = false;
+                    showConnectionStatus("Kitchen server error "
+                            + errorResponse.getStatusCode() + ". Retrying...");
+                    scheduleKitchenRetry(5000);
+                }
+            }
+
+            @Override public boolean onRenderProcessGone(
+                    WebView view,
+                    RenderProcessGoneDetail detail
+            ) {
+                showConnectionStatus("Kitchen display restarting...");
+                webHandler.postDelayed(() -> {
+                    if (!destroyed) recreate();
+                }, 800);
+                return true;
             }
         });
         webView.setWebChromeClient(new WebChromeClient());
         webView.addJavascriptInterface(new PrinterBridge(), "VitaPrinter");
 
-        setContentView(webView);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.rgb(2, 8, 23));
+        root.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        connectionStatus = new TextView(this);
+        connectionStatus.setTextColor(Color.WHITE);
+        connectionStatus.setBackgroundColor(Color.rgb(2, 8, 23));
+        connectionStatus.setGravity(Gravity.CENTER);
+        connectionStatus.setTextSize(widthDp <= 600f ? 16f : 18f);
+        connectionStatus.setPadding(24, 24, 24, 24);
+        root.addView(connectionStatus, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        showConnectionStatus("Connecting to Fai Fai Kitchen...");
+
+        setContentView(root);
+        registerNetworkRecovery();
 
         // Full dedicated-device kiosk is enabled when this app is provisioned
         // as Android Device Owner. Normal app operation is unchanged otherwise.
         KioskManager.applyPolicies(this);
-        webView.loadUrl(KITCHEN_URL);
+        if (isNetworkOnline()) {
+            webView.loadUrl(KITCHEN_URL);
+        } else {
+            showConnectionStatus("No internet. Reconnecting...");
+            scheduleKitchenRetry(3000);
+        }
+    }
+
+    private void showConnectionStatus(String message) {
+        runOnUiThread(() -> {
+            if (connectionStatus == null) return;
+            connectionStatus.setText(message == null ? "Connecting..." : message);
+            connectionStatus.setVisibility(View.VISIBLE);
+            connectionStatus.bringToFront();
+        });
+    }
+
+    private void hideConnectionStatus() {
+        runOnUiThread(() -> {
+            if (connectionStatus != null) connectionStatus.setVisibility(View.GONE);
+        });
+    }
+
+    private boolean isNetworkOnline() {
+        try {
+            ConnectivityManager manager = connectivityManager != null
+                    ? connectivityManager
+                    : (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (manager == null) return false;
+            Network network = manager.getActiveNetwork();
+            if (network == null) return false;
+            NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
+            return capabilities != null
+                    && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void scheduleKitchenRetry(long delayMs) {
+        webHandler.removeCallbacks(retryKitchenPage);
+        webHandler.postDelayed(retryKitchenPage, Math.max(500L, delayMs));
+    }
+
+    private void registerNetworkRecovery() {
+        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (connectivityManager == null || networkCallback != null) return;
+
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network network) {
+                webHandler.post(() -> {
+                    if (!destroyed && !kitchenPageReady) {
+                        showConnectionStatus("Internet connected. Loading Kitchen...");
+                        scheduleKitchenRetry(250);
+                    }
+                });
+            }
+
+            @Override public void onLost(Network network) {
+                webHandler.post(() -> {
+                    if (!destroyed && !isNetworkOnline()) {
+                        kitchenPageReady = false;
+                        showConnectionStatus("No internet. Reconnecting...");
+                        scheduleKitchenRetry(3000);
+                    }
+                });
+            }
+        };
+
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (Exception ignored) {
+            networkCallback = null;
+        }
     }
 
     private void requestRequiredPermissions() {
@@ -209,7 +392,7 @@ public class MainActivity extends Activity {
                     }
                     dialog.dismiss();
                     KioskManager.exitForAdmin(MainActivity.this);
-                    showToast("Admin mode unlocked. Restart device to lock again.");
+                    showToast("Admin mode unlocked. Open Fai Fai Kitchen to lock again.");
                 }));
         dialog.show();
     }
@@ -234,6 +417,12 @@ public class MainActivity extends Activity {
 
         // Re-enter kiosk whenever Fai Fai Kitchen comes to the foreground.
         KioskManager.enter(this);
+
+        // If the device booted before Wi-Fi was ready, immediately recover the
+        // WebView once connectivity exists instead of leaving a black screen.
+        if (!kitchenPageReady) {
+            scheduleKitchenRetry(isNetworkOnline() ? 150 : 2000);
+        }
     }
 
     @Override
@@ -250,10 +439,17 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
         syncHandler.removeCallbacks(syncKitchen);
+        webHandler.removeCallbacksAndMessages(null);
+        if (connectivityManager != null && networkCallback != null) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Exception ignored) { }
+            networkCallback = null;
+        }
         printerExecutor.shutdownNow();
         if (webView != null) {
             webView.removeJavascriptInterface("VitaPrinter");
+            webView.stopLoading();
             webView.destroy();
         }
         super.onDestroy();

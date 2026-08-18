@@ -5,17 +5,16 @@ import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.pm.PackageManager;
 import android.os.Build;
 import android.provider.Settings;
 
 /**
- * Dedicated-device kiosk helper.
+ * Dedicated-device kiosk helper for Fai Fai Kitchen.
  *
- * Full kiosk mode is activated only when this package has been provisioned as
- * Android Device Owner. Without Device Owner privileges the Kitchen app still
- * works normally and never falls back to user-escapable screen pinning.
+ * The app uses Android Device Owner + Lock Task only. It intentionally does
+ * NOT register itself as the system HOME launcher. This avoids the blank/black
+ * HOME-alias screen seen on some NETUM firmware while still blocking Home and
+ * Recents during Kitchen use.
  */
 public final class KioskManager {
     private KioskManager() {}
@@ -33,22 +32,6 @@ public final class KioskManager {
         return manager != null && manager.isDeviceOwnerApp(context.getPackageName());
     }
 
-    private static ComponentName homeComponent(Context context) {
-        return new ComponentName(context.getPackageName(), context.getPackageName() + ".KioskHomeActivity");
-    }
-
-    private static void setKitchenHomeEnabled(Context context, boolean enabled) {
-        try {
-            context.getPackageManager().setComponentEnabledSetting(
-                    homeComponent(context),
-                    enabled
-                            ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                            : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                    PackageManager.DONT_KILL_APP
-            );
-        } catch (Exception ignored) { }
-    }
-
     /** Apply persistent single-app policies. Safe to call repeatedly. */
     public static boolean applyPolicies(Context context) {
         DevicePolicyManager manager = dpm(context);
@@ -59,15 +42,22 @@ public final class KioskManager {
         ComponentName admin = adminComponent(context);
         String pkg = context.getPackageName();
 
+        // Clean up the persistent HOME policy from older builds that used the
+        // KioskHomeActivity alias. The normal Android launcher remains HOME.
+        try {
+            manager.clearPackagePersistentPreferredActivities(admin, pkg);
+        } catch (Exception ignored) { }
+
         try {
             manager.setLockTaskPackages(admin, new String[]{pkg});
         } catch (Exception ignored) { }
 
+        // Keep the physical power-menu available for Restart / Power Off.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 manager.setLockTaskFeatures(
-                    admin,
-                    DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
+                        admin,
+                        DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
                 );
             } catch (Exception ignored) { }
         }
@@ -76,14 +66,6 @@ public final class KioskManager {
             try { manager.setStatusBarDisabled(admin, true); } catch (Exception ignored) { }
             try { manager.setKeyguardDisabled(admin, true); } catch (Exception ignored) { }
         }
-
-        setKitchenHomeEnabled(context, true);
-        try {
-            IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
-            homeFilter.addCategory(Intent.CATEGORY_HOME);
-            homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
-            manager.addPersistentPreferredActivity(admin, homeFilter, homeComponent(context));
-        } catch (Exception ignored) { }
 
         return true;
     }
@@ -100,7 +82,7 @@ public final class KioskManager {
 
     /**
      * Temporarily release kiosk for the administrator. Device Owner remains
-     * installed. Reopening Fai Fai Kitchen or rebooting applies kiosk again.
+     * installed. Opening Fai Fai Kitchen again or rebooting re-enters kiosk.
      */
     public static void exitForAdmin(Activity activity) {
         DevicePolicyManager manager = dpm(activity);
@@ -119,11 +101,8 @@ public final class KioskManager {
             } catch (Exception ignored) { }
         }
 
-        // Temporarily remove Fai Fai Kitchen from HOME candidates while the
-        // administrator is unlocked. Reopening Kitchen or rebooting calls
-        // applyPolicies(), which enables it and restores kiosk automatically.
-        setKitchenHomeEnabled(activity, false);
-
+        // With no Kitchen HOME alias, this resolves to the device's normal
+        // launcher so the administrator can use Settings/other apps.
         try {
             Intent home = new Intent(Intent.ACTION_MAIN);
             home.addCategory(Intent.CATEGORY_HOME);
@@ -132,7 +111,7 @@ public final class KioskManager {
             return;
         } catch (Exception ignored) { }
 
-        // Very old/custom POS firmware fallback.
+        // Custom POS firmware fallback if a launcher cannot be resolved.
         try {
             Intent settings = new Intent(Settings.ACTION_SETTINGS);
             settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
