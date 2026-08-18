@@ -10,14 +10,12 @@ android {
         applicationId 'com.faifai.printer'
         minSdk 24
         targetSdk 35
-        // Safely above the currently installed versionCode 12.
         versionCode 1001
         versionName '1.11.1'
     }
 
     signingConfigs {
         release {
-            // The workflow restores this file before assembleRelease runs.
             storeFile file('fai-fai-kitchen-release.jks')
             storePassword '3EtFFNb49AX2nJcS!T0FOXo0'
             keyAlias 'faifaikitchen'
