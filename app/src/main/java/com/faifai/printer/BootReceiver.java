@@ -12,23 +12,37 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
+        // Restore dedicated-device HOME/lock-task policies after every reboot.
+        // When provisioned as Device Owner this makes Fai Fai Kitchen the HOME
+        // app again even if an administrator temporarily exited kiosk earlier.
+        boolean kioskReady = KioskManager.applyPolicies(context);
+
         String pin = context.getSharedPreferences("fai_fai_kitchen", Context.MODE_PRIVATE)
                 .getString("pin", "");
-        if (pin == null || pin.trim().length() < 4) {
-            return;
+        if (pin != null && pin.trim().length() >= 4) {
+            Intent service = new Intent(context, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_START);
+            try {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    context.startForegroundService(service);
+                } else {
+                    context.startService(service);
+                }
+            } catch (Exception ignored) {
+                // MainActivity starts the same service again when opened.
+            }
         }
 
-        Intent service = new Intent(context, KitchenOrderService.class);
-        service.setAction(KitchenOrderService.ACTION_START);
-        try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                context.startForegroundService(service);
-            } else {
-                context.startService(service);
-            }
-        } catch (Exception ignored) {
-            // Some manufacturers defer boot-time background work. Opening
-            // Fai Fai Kitchen once will start the same service again.
+        // Older dedicated NETUM terminals allow activity launch from boot. On
+        // newer Android versions the persistent HOME policy is the primary path.
+        if (kioskReady) {
+            try {
+                Intent launch = new Intent(context, MainActivity.class);
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                context.startActivity(launch);
+            } catch (Exception ignored) { }
         }
     }
 }

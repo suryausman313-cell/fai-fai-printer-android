@@ -3,9 +3,11 @@ package com.faifai.printer;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.text.InputType;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -18,6 +20,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.EditText;
 import android.widget.Toast;
 
 import java.util.ArrayList;
@@ -32,6 +35,7 @@ public class MainActivity extends Activity {
     private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
     private WebView webView;
     private final Handler syncHandler = new Handler(Looper.getMainLooper());
+    private boolean backLongPressHandled = false;
 
     private final Runnable syncKitchen = new Runnable() {
         @Override public void run() {
@@ -92,6 +96,10 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new PrinterBridge(), "VitaPrinter");
 
         setContentView(webView);
+
+        // Full dedicated-device kiosk is enabled when this app is provisioned
+        // as Android Device Owner. Normal app operation is unchanged otherwise.
+        KioskManager.applyPolicies(this);
         webView.loadUrl(KITCHEN_URL);
     }
 
@@ -130,11 +138,80 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webView != null && webView.canGoBack()) {
-            webView.goBack();
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.getRepeatCount() == 0) {
+                backLongPressHandled = false;
+                event.startTracking();
+            }
             return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            backLongPressHandled = true;
+            showAdminExitDialog();
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (!backLongPressHandled && webView != null && webView.canGoBack()) {
+                webView.goBack();
+            }
+            backLongPressHandled = false;
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    private String currentAdminExitPin() {
+        String saved = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
+                .getString("pin", "");
+        if (saved != null && saved.trim().length() >= 4) {
+            return saved.trim();
+        }
+        // Initial safety fallback matches the current Kitchen PIN. Once the
+        // Kitchen page syncs a PIN, that current PIN is used automatically.
+        return "2468";
+    }
+
+    private void showAdminExitDialog() {
+        if (!KioskManager.isDeviceOwner(this)) {
+            showToast("Kiosk setup is not activated on this device");
+            return;
+        }
+
+        final EditText input = new EditText(this);
+        input.setHint("Admin PIN");
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Admin unlock")
+                .setMessage("Enter Admin/Kitchen PIN to leave kiosk mode")
+                .setView(input)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Unlock", null)
+                .create();
+
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String entered = input.getText() == null ? "" : input.getText().toString().trim();
+                    if (!entered.equals(currentAdminExitPin())) {
+                        input.setError("Wrong PIN");
+                        return;
+                    }
+                    dialog.dismiss();
+                    KioskManager.exitForAdmin(MainActivity.this);
+                    showToast("Admin mode unlocked. Restart device to lock again.");
+                }));
+        dialog.show();
     }
 
     @Override
@@ -154,6 +231,9 @@ public class MainActivity extends Activity {
             service.setAction(KitchenOrderService.ACTION_START);
             startKitchenService(service);
         }
+
+        // Re-enter kiosk whenever Fai Fai Kitchen comes to the foreground.
+        KioskManager.enter(this);
     }
 
     @Override
