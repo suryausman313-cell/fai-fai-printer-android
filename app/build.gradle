@@ -10,8 +10,8 @@ android {
         applicationId 'com.faifai.printer'
         minSdk 24
         targetSdk 35
-        versionCode 1001
-        versionName '1.11.1'
+        versionCode 1003
+        versionName '1.12.0'
     }
 
     signingConfigs {
