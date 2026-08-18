@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
         // slightly more compact without changing the public web app on other devices.
         float widthDp = getResources().getDisplayMetrics().widthPixels
                 / getResources().getDisplayMetrics().density;
-        settings.setTextZoom(widthDp <= 600f ? 85 : 100);
+        settings.setTextZoom(widthDp <= 600f ? 75 : 100);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
@@ -140,6 +140,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Keep the NETUM/Kitchen display awake while Fai Fai Kitchen is visible.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
                 .edit()
                 .putBoolean("app_foreground", true)
@@ -156,6 +158,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        // As soon as the Kitchen app is no longer visible, return to the phone's
+        // normal screen-timeout behavior.
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
                 .edit()
                 .putBoolean("app_foreground", false)

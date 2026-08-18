@@ -344,9 +344,10 @@ public class KitchenOrderService extends Service {
         getSystemService(NotificationManager.class)
                 .notify(lateNotificationId(orderId), notification);
 
-        // When the WebView is visible, the Kitchen page itself handles the late
-        // voice. Native speech is for minimized/background Kitchen operation.
-        if (appIsForeground() || !localSoundEnabled()) {
+        // Always let the native Android service speak the late warning.
+        // NETUM/P58 WebView speech can be blocked even while the Kitchen page
+        // is visible, so foreground mode must not suppress the native voice.
+        if (!localSoundEnabled()) {
             return;
         }
 
@@ -365,9 +366,7 @@ public class KitchenOrderService extends Service {
 
             mainHandler.postDelayed(() -> {
                 if (textToSpeech == null) return;
-                String message = "Order number " + orderId
-                        + " is late. Time is finished. Please make order number "
-                        + orderId + " ready.";
+                String message = "Order " + orderId + " late. Please ready.";
                 int result = textToSpeech.speak(
                         message,
                         TextToSpeech.QUEUE_FLUSH,
