@@ -23,7 +23,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android platform
+      - name: Install Android SDK packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
@@ -31,35 +31,41 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Check signing secret
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "ANDROID_KEYSTORE_BASE64 repository secret is missing"
-            exit 1
-          fi
-
       - name: Restore permanent signing key
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: Repository secret ANDROID_KEYSTORE_BASE64 is missing."
+            exit 1
+          fi
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/fai-fai-kitchen-release.jks
           test -s app/fai-fai-kitchen-release.jks
+          keytool -list \
+            -keystore app/fai-fai-kitchen-release.jks \
+            -storepass '3EtFFNb49AX2nJcS!T0FOXo0' \
+            -alias faifaikitchen >/dev/null
 
       - name: Build signed release APK
-        run: gradle --no-daemon assembleRelease
+        run: gradle --no-daemon :app:assembleRelease
 
       - name: Verify signed APK
-        run: apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -f "$APK"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
 
       - name: Name APK
-        run: cp app/build/outputs/apk/release/app-release.apk Fai-Fai-Printer.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Fai-Fai-Printer-v1001-SIGNED.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: Fai-Fai-Kitchen-Signed-APK
-          path: Fai-Fai-Printer.apk
+          name: Fai-Fai-Kitchen-Signed-APK-v1001
+          path: Fai-Fai-Printer-v1001-SIGNED.apk
           if-no-files-found: error
           retention-days: 30
