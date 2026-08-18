@@ -6,6 +6,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.provider.Settings;
 
@@ -32,6 +33,22 @@ public final class KioskManager {
         return manager != null && manager.isDeviceOwnerApp(context.getPackageName());
     }
 
+    private static ComponentName homeComponent(Context context) {
+        return new ComponentName(context.getPackageName(), context.getPackageName() + ".KioskHomeActivity");
+    }
+
+    private static void setKitchenHomeEnabled(Context context, boolean enabled) {
+        try {
+            context.getPackageManager().setComponentEnabledSetting(
+                    homeComponent(context),
+                    enabled
+                            ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                            : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+            );
+        } catch (Exception ignored) { }
+    }
+
     /** Apply persistent single-app policies. Safe to call repeatedly. */
     public static boolean applyPolicies(Context context) {
         DevicePolicyManager manager = dpm(context);
@@ -48,7 +65,10 @@ public final class KioskManager {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
-                manager.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
+                manager.setLockTaskFeatures(
+                    admin,
+                    DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
+                );
             } catch (Exception ignored) { }
         }
 
@@ -57,12 +77,12 @@ public final class KioskManager {
             try { manager.setKeyguardDisabled(admin, true); } catch (Exception ignored) { }
         }
 
+        setKitchenHomeEnabled(context, true);
         try {
             IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
             homeFilter.addCategory(Intent.CATEGORY_HOME);
             homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
-            ComponentName home = new ComponentName(context, MainActivity.class);
-            manager.addPersistentPreferredActivity(admin, homeFilter, home);
+            manager.addPersistentPreferredActivity(admin, homeFilter, homeComponent(context));
         } catch (Exception ignored) { }
 
         return true;
@@ -99,8 +119,20 @@ public final class KioskManager {
             } catch (Exception ignored) { }
         }
 
-        // Open Settings after a successful admin unlock so the administrator
-        // can reach the launcher/apps without hunting for another escape path.
+        // Temporarily remove Fai Fai Kitchen from HOME candidates while the
+        // administrator is unlocked. Reopening Kitchen or rebooting calls
+        // applyPolicies(), which enables it and restores kiosk automatically.
+        setKitchenHomeEnabled(activity, false);
+
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            activity.startActivity(home);
+            return;
+        } catch (Exception ignored) { }
+
+        // Very old/custom POS firmware fallback.
         try {
             Intent settings = new Intent(Settings.ACTION_SETTINGS);
             settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
