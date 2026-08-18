@@ -68,7 +68,7 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiPrinter/1.8"
+                settings.getUserAgentString() + " FaiFaiKitchen/1.9"
         );
 
         webView.setWebViewClient(new WebViewClient() {
@@ -125,6 +125,32 @@ public class MainActivity extends Activity {
             return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
+                .edit()
+                .putBoolean("app_foreground", true)
+                .apply();
+
+        String savedPin = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
+                .getString("pin", "");
+        if (savedPin != null && savedPin.trim().length() >= 4) {
+            Intent service = new Intent(this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_START);
+            startKitchenService(service);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
+                .edit()
+                .putBoolean("app_foreground", false)
+                .apply();
+        super.onPause();
     }
 
     @Override
