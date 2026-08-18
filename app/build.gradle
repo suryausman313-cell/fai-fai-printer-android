@@ -10,21 +10,18 @@ android {
         applicationId 'com.faifai.printer'
         minSdk 24
         targetSdk 35
-        // GitHub Actions supplies a monotonically increasing version code.
-        // Local fallback is intentionally above the currently installed v12.
-        versionCode (System.getenv('APP_VERSION_CODE') ?: '1001').toInteger()
-        versionName System.getenv('APP_VERSION_NAME') ?: '1.11.0'
+        // Safely above the currently installed versionCode 12.
+        versionCode 1001
+        versionName '1.11.1'
     }
 
     signingConfigs {
         release {
-            def ksPath = System.getenv('ANDROID_KEYSTORE_PATH')
-            if (ksPath) {
-                storeFile file(ksPath)
-                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
-                keyAlias System.getenv('ANDROID_KEY_ALIAS')
-                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
-            }
+            // The workflow restores this file before assembleRelease runs.
+            storeFile file('fai-fai-kitchen-release.jks')
+            storePassword '3EtFFNb49AX2nJcS!T0FOXo0'
+            keyAlias 'faifaikitchen'
+            keyPassword 'qs8%0nhdlogibreS#bz64Nm#'
         }
     }
 
