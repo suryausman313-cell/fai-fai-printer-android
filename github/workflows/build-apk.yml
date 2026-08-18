@@ -1,4 +1,4 @@
-name: Build Fai Fai Printer APK
+name: Build Fai Fai Kitchen APK
 
 on:
   workflow_dispatch:
@@ -31,16 +31,48 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build APK
-        run: gradle --no-daemon assembleDebug
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || (echo "Missing ANDROID_KEYSTORE_BASE64 secret" && exit 1)
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || (echo "Missing ANDROID_KEYSTORE_PASSWORD secret" && exit 1)
+          test -n "$ANDROID_KEY_ALIAS" || (echo "Missing ANDROID_KEY_ALIAS secret" && exit 1)
+          test -n "$ANDROID_KEY_PASSWORD" || (echo "Missing ANDROID_KEY_PASSWORD secret" && exit 1)
+
+      - name: Restore permanent signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/fai-fai-kitchen-release.jks
+          chmod 600 app/fai-fai-kitchen-release.jks
+
+      - name: Set version
+        run: |
+          echo "APP_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "APP_VERSION_NAME=1.11.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Build permanently signed release APK
+        env:
+          ANDROID_KEYSTORE_PATH: fai-fai-kitchen-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleRelease
+
+      - name: Verify APK signature
+        run: apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
 
       - name: Name APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Fai-Fai-Printer.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Fai-Fai-Printer.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Fai-Fai-Printer-APK
+          name: Fai-Fai-Kitchen-Signed-APK
           path: Fai-Fai-Printer.apk
           if-no-files-found: error
           retention-days: 30
