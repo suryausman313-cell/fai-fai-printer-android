@@ -31,17 +31,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Check signing secrets
+      - name: Check permanent signing key secret
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           test -n "$ANDROID_KEYSTORE_BASE64" || (echo "Missing ANDROID_KEYSTORE_BASE64 secret" && exit 1)
-          test -n "$ANDROID_KEYSTORE_PASSWORD" || (echo "Missing ANDROID_KEYSTORE_PASSWORD secret" && exit 1)
-          test -n "$ANDROID_KEY_ALIAS" || (echo "Missing ANDROID_KEY_ALIAS secret" && exit 1)
-          test -n "$ANDROID_KEY_PASSWORD" || (echo "Missing ANDROID_KEY_PASSWORD secret" && exit 1)
 
       - name: Restore permanent signing key
         env:
@@ -58,9 +52,9 @@ jobs:
       - name: Build permanently signed release APK
         env:
           ANDROID_KEYSTORE_PATH: fai-fai-kitchen-release.jks
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: 3EtFFNb49AX2nJcS!T0FOXo0
+          ANDROID_KEY_ALIAS: faifaikitchen
+          ANDROID_KEY_PASSWORD: qs8%0nhdlogibreS#bz64Nm#
         run: gradle --no-daemon assembleRelease
 
       - name: Verify APK signature
