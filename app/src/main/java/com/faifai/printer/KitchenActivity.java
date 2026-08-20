@@ -5,16 +5,19 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.text.InputType;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.speech.tts.TextToSpeech;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -36,6 +39,7 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -54,6 +58,8 @@ public class KitchenActivity extends Activity {
     private boolean mainFrameFailed = false;
     private boolean kitchenPageReady = false;
     private boolean destroyed = false;
+    private TextToSpeech textToSpeech;
+    private volatile boolean textToSpeechReady = false;
 
     private final Runnable retryKitchenPage = new Runnable() {
         @Override public void run() {
@@ -90,6 +96,19 @@ public class KitchenActivity extends Activity {
         KioskManager.ensureWifiReady(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        // Native Kitchen voice. The web page already calls VitaPrinter.speakText()
+        // for late/ready announcements. Keeping TTS native makes the orange POS
+        // device speak the same order-number message after the existing single Kitchen alert tone.
+        textToSpeech = new TextToSpeech(getApplicationContext(), status -> {
+            if (status == TextToSpeech.SUCCESS && textToSpeech != null) {
+                int result = textToSpeech.setLanguage(Locale.US);
+                textToSpeech.setSpeechRate(0.90f);
+                textToSpeech.setPitch(1.0f);
+                textToSpeechReady = result != TextToSpeech.LANG_MISSING_DATA
+                        && result != TextToSpeech.LANG_NOT_SUPPORTED;
+            }
+        });
+
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(2, 8, 23));
         webView.setLayoutParams(new ViewGroup.LayoutParams(
@@ -116,7 +135,7 @@ public class KitchenActivity extends Activity {
         settings.setDisplayZoomControls(false);
 
         settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiKitchen/1.14.0"
+                settings.getUserAgentString() + " FaiFaiKitchen/1.21.0"
         );
 
         webView.setWebViewClient(new WebViewClient() {
@@ -460,6 +479,12 @@ public class KitchenActivity extends Activity {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Exception ignored) { }
             networkCallback = null;
         }
+        if (textToSpeech != null) {
+            try { textToSpeech.stop(); } catch (Exception ignored) { }
+            try { textToSpeech.shutdown(); } catch (Exception ignored) { }
+            textToSpeech = null;
+            textToSpeechReady = false;
+        }
         printerExecutor.shutdownNow();
         if (webView != null) {
             webView.removeJavascriptInterface("VitaPrinter");
@@ -467,6 +492,29 @@ public class KitchenActivity extends Activity {
             webView.destroy();
         }
         super.onDestroy();
+    }
+
+    private void speakNative(String message, int attempt) {
+        if (destroyed || message == null || message.trim().isEmpty()) return;
+
+        if (textToSpeech != null && textToSpeechReady) {
+            try {
+                textToSpeech.stop();
+                textToSpeech.speak(
+                        message,
+                        TextToSpeech.QUEUE_FLUSH,
+                        null,
+                        "fai_fai_kitchen_" + System.currentTimeMillis()
+                );
+                return;
+            } catch (Exception ignored) { }
+        }
+
+        // TTS initialization can take a moment after boot/app launch. Retry
+        // briefly so the first late/ready announcement is not lost.
+        if (attempt < 4) {
+            webHandler.postDelayed(() -> speakNative(message, attempt + 1), 500L);
+        }
     }
 
     private void showToast(String message) {
@@ -526,6 +574,34 @@ public class KitchenActivity extends Activity {
             Intent service = new Intent(KitchenActivity.this, KitchenOrderService.class);
             service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
             startKitchenService(service);
+        }
+
+        @JavascriptInterface
+        public void speakText(String text) {
+            final String message = text == null ? "" : text.trim();
+            if (message.isEmpty()) return;
+
+            runOnUiThread(() -> speakNative(message, 0));
+        }
+
+        @JavascriptInterface
+        public String getBatteryInfo() {
+            try {
+                Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                if (battery == null) return "{\"level\":-1,\"charging\":false}";
+
+                int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                        || status == BatteryManager.BATTERY_STATUS_FULL;
+                int percent = (level >= 0 && scale > 0)
+                        ? Math.max(0, Math.min(100, Math.round(level * 100f / scale)))
+                        : -1;
+                return "{\"level\":" + percent + ",\"charging\":" + charging + "}";
+            } catch (Exception ignored) {
+                return "{\"level\":-1,\"charging\":false}";
+            }
         }
 
         @JavascriptInterface
