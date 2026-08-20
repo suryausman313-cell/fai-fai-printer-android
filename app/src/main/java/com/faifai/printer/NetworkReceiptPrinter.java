@@ -7,6 +7,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Typeface;
 import android.util.Base64;
 
 import org.json.JSONArray;
@@ -88,7 +89,236 @@ final class NetworkReceiptPrinter {
         return render(context, receipt);
     }
 
+    /**
+     * Raster receipt for the NETUM 58mm printer. Rendering text as a bitmap gives
+     * the kitchen copy a much clearer, larger delivery-platform style than the
+     * printer's tiny built-in monospace font. Legacy ESC/POS text remains as a
+     * safe fallback if bitmap rendering ever fails.
+     */
     private static byte[] render(Context context, Receipt receipt) throws Exception {
+        try {
+            Bitmap bitmap = buildClearReceiptBitmap(context, receipt);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            command(out, 0x1B, 0x40);
+            rasterImageCentered(out, bitmap, 384, 384);
+            bitmap.recycle();
+            command(out, 0x1B, 0x64, 3);
+            if (receipt.cutPaper) command(out, 0x1D, 0x56, 0x00);
+            return out.toByteArray();
+        } catch (Exception bitmapError) {
+            return renderLegacy(context, receipt);
+        }
+    }
+
+    private static Bitmap buildClearReceiptBitmap(Context context, Receipt receipt) throws Exception {
+        final int width = 384;
+        final int margin = 16;
+        final int right = width - margin;
+        Bitmap page = Bitmap.createBitmap(width, 7000, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(page);
+        canvas.drawColor(Color.WHITE);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        paint.setColor(Color.BLACK);
+        paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+
+        int y = 16;
+        if (receipt.showLogo) {
+            try {
+                Bitmap logo = loadLogo(context, receipt.logoUrl);
+                if (logo != null) {
+                    int logoH = 88;
+                    int logoW = Math.max(60, Math.min(150, Math.round((float) logo.getWidth() * logoH / Math.max(1, logo.getHeight()))));
+                    Rect dst = new Rect((width - logoW) / 2, y, (width + logoW) / 2, y + logoH);
+                    canvas.drawBitmap(logo, null, dst, paint);
+                    logo.recycle();
+                    y += logoH + 6;
+                }
+            } catch (Exception ignored) { }
+        }
+
+        y = bitmapCentered(canvas, paint, receipt.restaurantName, y, 30, true, width, margin);
+        if (!receipt.headerText.isEmpty()) y = bitmapCenteredWrapped(canvas, paint, receipt.headerText, y + 2, 19, false, width, margin);
+        y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+
+        y = bitmapCentered(canvas, paint, "#" + receipt.orderId, y + 10, 38, true, width, margin);
+        DateTimeParts dt = formatDateTime(receipt.createdAt);
+        String dtText = (dt.date + " " + dt.time).trim();
+        y = bitmapCentered(canvas, paint, dtText, y + 2, 23, true, width, margin);
+        y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+
+        if (!receipt.customerName.isEmpty()) {
+            y = bitmapCentered(canvas, paint, "Customer:", y + 10, 23, true, width, margin);
+            y = bitmapCenteredWrapped(canvas, paint, receipt.customerName, y + 2, 27, true, width, margin);
+        }
+        if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
+            y = bitmapCentered(canvas, paint, receipt.customerPhone, y + 2, 21, true, width, margin);
+        }
+
+        String payment = pretty(receipt.paymentMethod);
+        String paymentLower = payment.toLowerCase(Locale.US);
+        if (receipt.showPaymentMethod && !payment.isEmpty()) {
+            y += 8;
+            if (paymentLower.contains("cash")) {
+                String cash = receipt.orderType.toLowerCase(Locale.US).contains("pickup") ? "CASH ON PICKUP" : "CASH ON DELIVERY";
+                y = bitmapBox(canvas, paint, cash, y, width, margin);
+            } else {
+                y = bitmapBox(canvas, paint, "PREPAID", y, width, margin);
+                String card = paymentLower.contains("card") || paymentLower.contains("credit") || paymentLower.contains("debit") ? "CREDIT CARD" : payment.toUpperCase(Locale.US);
+                y = bitmapBox(canvas, paint, card, y + 5, width, margin);
+            }
+        }
+
+        if (!receipt.estimatedTime.isEmpty()) {
+            y = bitmapCentered(canvas, paint, receipt.orderType.toLowerCase(Locale.US).contains("pickup") ? "Pick up time" : "Ready time", y + 12, 24, false, width, margin);
+            y = bitmapCentered(canvas, paint, prettyReadyTime(receipt.estimatedTime), y + 1, 31, true, width, margin);
+        }
+
+        int itemCount = 0;
+        for (int i = 0; i < receipt.items.length(); i++) {
+            JSONObject item = receipt.items.optJSONObject(i);
+            if (item != null) itemCount += Math.max(1, integer(item, 1, "quantity", "qty"));
+        }
+        y = bitmapCentered(canvas, paint, itemCount + (itemCount == 1 ? " Item" : " Items"), y + 5, 21, true, width, margin);
+        y = bitmapSeparator(canvas, paint, y + 7, width, margin);
+
+        for (int i = 0; i < receipt.items.length(); i++) {
+            JSONObject item = receipt.items.optJSONObject(i);
+            if (item == null) continue;
+            int qty = Math.max(1, integer(item, 1, "quantity", "qty"));
+            String name = first(item, "name", "item_name", "title");
+            if (name.isEmpty()) name = "Item";
+            String size = first(item, "size", "size_name", "selectedSize");
+            double linePrice = number(item, "total_price", "line_total", "totalPrice");
+            double unitPrice = number(item, "price", "unit_price");
+            if (linePrice <= 0 && unitPrice > 0) linePrice = unitPrice * qty;
+            y = bitmapItemWithPrice(canvas, paint, qty + " x " + name, receipt.showItemPrices && linePrice > 0 ? money(linePrice) : "", y + 10, width, margin);
+            if (!size.isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   " + qty + " x " + pretty(size) + " size", y + 1, 21, true, width, margin + 8, right);
+            JSONArray extras = array(item, "extras", "selected_extras", "toppings");
+            for (int e = 0; e < extras.length(); e++) {
+                Object extra = extras.opt(e);
+                String extraText = extra instanceof JSONObject ? first((JSONObject) extra, "name", "title", "label") : String.valueOf(extra == null ? "" : extra);
+                if (!extraText.trim().isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   + " + extraText.trim(), y + 1, 19, false, width, margin + 8, right);
+            }
+            double itemDiscount = number(item, "discount", "discount_amount", "item_discount");
+            if (itemDiscount > 0) y = bitmapPair(canvas, paint, "   Discount", "-" + money(itemDiscount), y + 1, 20, false, width, margin);
+            y += 7;
+        }
+
+        y = bitmapSeparator(canvas, paint, y + 3, width, margin);
+        if (receipt.showOrderTotals) {
+            if (receipt.subtotalAmount > 0) y = bitmapPair(canvas, paint, "Subtotal", money(receipt.subtotalAmount), y + 8, 23, false, width, margin);
+            if (receipt.serviceFee > 0) y = bitmapPair(canvas, paint, "Service Fee", money(receipt.serviceFee), y + 3, 23, false, width, margin);
+            if (receipt.smallOrderFee > 0) y = bitmapPair(canvas, paint, "Small Order Fee", money(receipt.smallOrderFee), y + 3, 23, false, width, margin);
+            if (receipt.deliveryCharge > 0) y = bitmapPair(canvas, paint, "Delivery Fee", money(receipt.deliveryCharge), y + 3, 23, false, width, margin);
+            if (receipt.discountAmount > 0) y = bitmapPair(canvas, paint, "Item Discounts", "-" + money(receipt.discountAmount), y + 3, 23, false, width, margin);
+            if (receipt.tipAmount > 0) y = bitmapPair(canvas, paint, "Tip", money(receipt.tipAmount), y + 3, 23, false, width, margin);
+            y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+            y = bitmapPair(canvas, paint, "TOTAL", money(receipt.totalAmount), y + 9, 32, true, width, margin);
+            y = bitmapPair(canvas, paint, "VAT (Incl.)", receipt.taxAmount > 0 ? money(receipt.taxAmount) : "--", y + 6, 21, true, width, margin);
+            y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+        }
+
+        if (!receipt.footerText.isEmpty()) y = bitmapCenteredWrapped(canvas, paint, receipt.footerText, y + 10, 18, false, width, margin);
+        y += 18;
+        Bitmap cropped = Bitmap.createBitmap(page, 0, 0, width, Math.min(page.getHeight(), Math.max(120, y)));
+        page.recycle();
+        return cropped;
+    }
+
+    private static void bitmapPaint(Paint paint, float size, boolean bold, Paint.Align align) {
+        paint.setTextSize(size);
+        paint.setTypeface(Typeface.create("sans-serif", bold ? Typeface.BOLD : Typeface.NORMAL));
+        paint.setTextAlign(align);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setStrokeWidth(1f);
+        paint.setColor(Color.BLACK);
+    }
+
+    private static int bitmapCentered(Canvas c, Paint p, String text, int y, int size, boolean bold, int width, int margin) {
+        bitmapPaint(p, size, bold, Paint.Align.CENTER);
+        String value = text == null ? "" : text.trim();
+        if (value.isEmpty()) return y;
+        c.drawText(value, width / 2f, y + size, p);
+        return y + size + 7;
+    }
+
+    private static int bitmapCenteredWrapped(Canvas c, Paint p, String text, int y, int size, boolean bold, int width, int margin) {
+        List<String> lines = bitmapWrap(p, text, width - margin * 2, size, bold);
+        for (String line : lines) y = bitmapCentered(c, p, line, y, size, bold, width, margin);
+        return y;
+    }
+
+    private static int bitmapLeftWrapped(Canvas c, Paint p, String text, int y, int size, boolean bold, int width, int left, int right) {
+        List<String> lines = bitmapWrap(p, text, right - left, size, bold);
+        bitmapPaint(p, size, bold, Paint.Align.LEFT);
+        for (String line : lines) {
+            c.drawText(line, left, y + size, p);
+            y += size + 7;
+        }
+        return y;
+    }
+
+    private static List<String> bitmapWrap(Paint p, String text, int maxWidth, int size, boolean bold) {
+        bitmapPaint(p, size, bold, Paint.Align.LEFT);
+        List<String> lines = new ArrayList<>();
+        String clean = text == null ? "" : text.trim();
+        if (clean.isEmpty()) return lines;
+        String[] words = clean.split("\\s+");
+        String current = "";
+        for (String word : words) {
+            String candidate = current.isEmpty() ? word : current + " " + word;
+            if (p.measureText(candidate) <= maxWidth || current.isEmpty()) current = candidate;
+            else { lines.add(current); current = word; }
+        }
+        if (!current.isEmpty()) lines.add(current);
+        return lines;
+    }
+
+    private static int bitmapSeparator(Canvas c, Paint p, int y, int width, int margin) {
+        p.setColor(Color.BLACK); p.setStrokeWidth(2.5f); p.setStyle(Paint.Style.STROKE);
+        c.drawLine(margin, y, width - margin, y, p);
+        p.setStyle(Paint.Style.FILL);
+        return y + 5;
+    }
+
+    private static int bitmapBox(Canvas c, Paint p, String text, int y, int width, int margin) {
+        bitmapPaint(p, 25, true, Paint.Align.CENTER);
+        float tw = p.measureText(text);
+        float left = Math.max(margin, (width - tw) / 2f - 10);
+        float right = Math.min(width - margin, (width + tw) / 2f + 10);
+        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(2.5f);
+        c.drawRect(left, y, right, y + 38, p);
+        p.setStyle(Paint.Style.FILL);
+        c.drawText(text, width / 2f, y + 28, p);
+        return y + 43;
+    }
+
+    private static int bitmapPair(Canvas c, Paint p, String leftText, String rightText, int y, int size, boolean bold, int width, int margin) {
+        bitmapPaint(p, size, bold, Paint.Align.LEFT);
+        c.drawText(leftText == null ? "" : leftText, margin, y + size, p);
+        p.setTextAlign(Paint.Align.RIGHT);
+        c.drawText(rightText == null ? "" : rightText, width - margin, y + size, p);
+        return y + size + 7;
+    }
+
+    private static int bitmapItemWithPrice(Canvas c, Paint p, String itemText, String price, int y, int width, int margin) {
+        int priceArea = price == null || price.isEmpty() ? 0 : 105;
+        int textWidth = width - margin * 2 - priceArea;
+        List<String> lines = bitmapWrap(p, itemText, textWidth, 25, true);
+        bitmapPaint(p, 25, true, Paint.Align.LEFT);
+        int startY = y;
+        for (String line : lines) {
+            c.drawText(line, margin, y + 25, p);
+            y += 32;
+        }
+        if (price != null && !price.isEmpty()) {
+            bitmapPaint(p, 23, true, Paint.Align.RIGHT);
+            c.drawText(price, width - margin, startY + 25, p);
+        }
+        return y;
+    }
+
+    private static byte[] renderLegacy(Context context, Receipt receipt) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         // This Fai Fai NETUM terminal has a built-in 58mm printer. Ignore any
         // stale 80mm web setting so text uses the full paper width and stays large.
