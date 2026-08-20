@@ -116,7 +116,7 @@ public class KitchenActivity extends Activity {
         settings.setDisplayZoomControls(false);
 
         settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiKitchen/1.13.0"
+                settings.getUserAgentString() + " FaiFaiKitchen/1.14.0"
         );
 
         webView.setWebViewClient(new WebViewClient() {
@@ -413,6 +413,13 @@ public class KitchenActivity extends Activity {
         String savedPin = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
                 .getString("pin", "");
         if (savedPin != null && savedPin.trim().length() >= 4) {
+            // If the background service started ringing before the WebView became
+            // visible, silence it now. The web page will ring again only after the
+            // New order card has actually been painted on screen.
+            Intent stopEarlyAlarm = new Intent(this, KitchenOrderService.class);
+            stopEarlyAlarm.setAction(KitchenOrderService.ACTION_STOP_ALARM);
+            startKitchenService(stopEarlyAlarm);
+
             Intent service = new Intent(this, KitchenOrderService.class);
             service.setAction(KitchenOrderService.ACTION_START);
             startKitchenService(service);
@@ -504,6 +511,14 @@ public class KitchenActivity extends Activity {
                     startKitchenService(service);
                 }
             } catch (Exception ignored) { }
+        }
+
+        @JavascriptInterface
+        public void startOrderAlarm(int count) {
+            Intent service = new Intent(KitchenActivity.this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_RING_NOW);
+            service.putExtra(KitchenOrderService.EXTRA_ORDER_COUNT, Math.max(1, count));
+            startKitchenService(service);
         }
 
         @JavascriptInterface

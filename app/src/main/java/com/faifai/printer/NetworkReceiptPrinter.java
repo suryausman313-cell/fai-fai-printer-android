@@ -32,6 +32,12 @@ final class NetworkReceiptPrinter {
     private static final String WEB_BASE_URL = "https://fai-fai-juice.pages.dev";
     private static final String DEFAULT_LOGO_URL = WEB_BASE_URL + "/fai-fai-receipt-logo.png";
 
+    // ESC/POS GS ! n: high nibble controls width, low nibble controls height.
+    // 0x01 = normal width / double height; 0x11 = double width / double height.
+    private static final int SCALE_NORMAL = 0x00;
+    private static final int SCALE_TALL = 0x01;
+    private static final int SCALE_BIG = 0x11;
+
     private NetworkReceiptPrinter() {}
 
     static void print(Context context, String payloadJson) throws Exception {
@@ -84,14 +90,16 @@ final class NetworkReceiptPrinter {
 
     private static byte[] render(Context context, Receipt receipt) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        boolean is58mm = receipt.paperWidth.equals("58mm");
-        int width = is58mm ? 32 : 48;
-        int paperDots = is58mm ? 384 : 576;
-        int logoDots = is58mm ? 145 : 185;
+        // This Fai Fai NETUM terminal has a built-in 58mm printer. Ignore any
+        // stale 80mm web setting so text uses the full paper width and stays large.
+        boolean is58mm = true;
+        int width = 32;
+        int paperDots = 384;
+        int logoDots = 176;
 
         command(out, 0x1B, 0x40); // ESC @ - initialize printer
         command(out, 0x1B, 0x4D, 0x00); // Font A
-        command(out, 0x1B, 0x33, 31); // clearer/open line spacing for handheld 58mm
+        command(out, 0x1B, 0x33, 36); // taller/open spacing like delivery-platform receipts
         doubleStrike(out, true); // darker, easier-to-read print
         align(out, 1);
 
@@ -107,29 +115,30 @@ final class NetworkReceiptPrinter {
         }
 
         bold(out, true);
-        textScale(out, 0x00);
+        textScale(out, SCALE_BIG);
         line(out, receipt.restaurantName);
-        bold(out, true);
+        textScale(out, SCALE_NORMAL);
         multilineCentered(out, receipt.headerText, width);
         line(out, repeat('-', width));
 
-        // Large, clear order identity while still fitting 58mm paper.
+        // Talabat-style: order number and time are the first things staff can read.
         bold(out, true);
-        textScale(out, 0x30); // double width + double height
-        line(out, "ORDER #" + receipt.orderId);
-        textScale(out, 0x00);
-        bold(out, true);
+        textScale(out, SCALE_BIG);
+        line(out, "#" + receipt.orderId);
+        textScale(out, SCALE_TALL);
         DateTimeParts dateTime = formatDateTime(receipt.createdAt);
         line(out, dateTime.date.replace('/', '.') + " " + dateTime.time);
+        textScale(out, SCALE_NORMAL);
         line(out, repeat('-', width));
 
         if (!receipt.customerName.isEmpty()) {
+            align(out, 0);
+            bold(out, true);
+            textScale(out, SCALE_TALL);
             line(out, "Customer:");
-            bold(out, true);
-            textScale(out, 0x10); // double height, normal width
+            align(out, 1);
             multilineCentered(out, receipt.customerName, width);
-            textScale(out, 0x00);
-            bold(out, true);
+            textScale(out, SCALE_NORMAL);
         }
         if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
             multilineCentered(out, receipt.customerPhone, width);
@@ -141,7 +150,10 @@ final class NetworkReceiptPrinter {
         String paymentLower = payment.toLowerCase(Locale.US);
         if (receipt.showPaymentMethod && !payment.isEmpty()) {
             if (paymentLower.contains("cash")) {
-                boxedCentered(out, "CASH ON DELIVERY", width);
+                String cashLabel = receipt.orderType.toLowerCase(Locale.US).contains("pickup")
+                        ? "CASH ON PICKUP"
+                        : "CASH ON DELIVERY";
+                boxedCentered(out, cashLabel, width);
             } else {
                 boxedCentered(out, "PREPAID", width);
                 if (paymentLower.contains("card") || paymentLower.contains("credit") || paymentLower.contains("debit")) {
@@ -154,10 +166,11 @@ final class NetworkReceiptPrinter {
 
         if (!receipt.estimatedTime.isEmpty()) {
             line(out, "");
-            line(out, "Ready time");
             bold(out, true);
+            textScale(out, SCALE_TALL);
+            line(out, receipt.orderType.toLowerCase(Locale.US).contains("pickup") ? "Pick up time" : "Ready time");
             multilineCentered(out, prettyReadyTime(receipt.estimatedTime), width);
-            bold(out, true);
+            textScale(out, SCALE_NORMAL);
         }
 
         line(out, "");
@@ -183,12 +196,11 @@ final class NetworkReceiptPrinter {
             line(out, repeat('-', width));
             bold(out, true);
             align(out, 0);
+            textScale(out, SCALE_BIG);
             line(out, "TOTAL");
             align(out, 1);
-            textScale(out, 0x30); // big, clear amount; short enough for 58mm
-            line(out, "AED " + money(receipt.totalAmount));
-            textScale(out, 0x00);
-            bold(out, true);
+            line(out, money(receipt.totalAmount));
+            textScale(out, SCALE_NORMAL);
             align(out, 0);
 
             if (receipt.taxAmount > 0) pair(out, "VAT (Incl.)", money(receipt.taxAmount), width);
@@ -226,10 +238,10 @@ final class NetworkReceiptPrinter {
 
             String itemLine = quantity + " x " + label;
             bold(out, true);
-            textScale(out, 0x10); // clearer item line without reducing usable width
+            textScale(out, SCALE_TALL); // normal width + double height for clear item names
             if (receipt.showItemPrices && linePrice > 0) pair(out, itemLine, money(linePrice), width);
             else wrapped(out, itemLine, width);
-            textScale(out, 0x00);
+            textScale(out, SCALE_NORMAL);
             bold(out, true);
 
             if (!sizeName.isEmpty()) wrapped(out, "  " + quantity + " x " + pretty(sizeName) + " size", width);
