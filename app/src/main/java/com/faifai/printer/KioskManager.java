@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.provider.Settings;
+import android.net.wifi.WifiManager;
 
 /**
  * Dedicated-device kiosk helper for Fai Fai Kitchen.
@@ -30,6 +31,24 @@ public final class KioskManager {
     public static boolean isDeviceOwner(Context context) {
         DevicePolicyManager manager = dpm(context);
         return manager != null && manager.isDeviceOwnerApp(context.getPackageName());
+    }
+
+    /**
+     * Keep Wi-Fi enabled and ask Android to reconnect to a previously saved
+     * network. No SSID/password is stored in the app. The network must have
+     * been connected/saved once in Android settings. Device Owner apps are
+     * allowed to restore Wi-Fi on modern Android versions.
+     */
+    public static void ensureWifiReady(Context context) {
+        try {
+            Context appContext = context.getApplicationContext();
+            WifiManager wifi = (WifiManager) appContext.getSystemService(Context.WIFI_SERVICE);
+            if (wifi == null) return;
+            if (!wifi.isWifiEnabled()) {
+                try { wifi.setWifiEnabled(true); } catch (Exception ignored) { }
+            }
+            try { wifi.reconnect(); } catch (Exception ignored) { }
+        } catch (Exception ignored) { }
     }
 
     /** Apply persistent single-app policies. Safe to call repeatedly. */

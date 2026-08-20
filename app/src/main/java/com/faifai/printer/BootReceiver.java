@@ -12,8 +12,9 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
-        // Restore Device Owner / Lock Task allow-list after every reboot and
-        // clean any persistent HOME preference left by older builds.
+        // Restore saved Wi-Fi first, then restore Device Owner / Lock Task.
+        // Android remembers the SSID/password; this app never stores it.
+        KioskManager.ensureWifiReady(context);
         boolean kioskReady = KioskManager.applyPolicies(context);
 
         String pin = context.getSharedPreferences("fai_fai_kitchen", Context.MODE_PRIVATE)

@@ -87,15 +87,15 @@ final class NetworkReceiptPrinter {
         boolean is58mm = receipt.paperWidth.equals("58mm");
         int width = is58mm ? 32 : 48;
         int paperDots = is58mm ? 384 : 576;
-        int logoDots = is58mm ? 105 : 145;
+        int logoDots = is58mm ? 145 : 185;
 
         command(out, 0x1B, 0x40); // ESC @ - initialize printer
         command(out, 0x1B, 0x4D, 0x00); // Font A
-        command(out, 0x1B, 0x33, 24); // compact marketplace-style line spacing
-        doubleStrike(out, false);
+        command(out, 0x1B, 0x33, 31); // clearer/open line spacing for handheld 58mm
+        doubleStrike(out, true); // darker, easier-to-read print
         align(out, 1);
 
-        // Keep Fai Fai branding, but use a smaller marketplace-style logo.
+        // Keep Fai Fai branding with a clearer, slightly larger logo.
         try {
             Bitmap logo = loadLogo(context, receipt.logoUrl);
             if (logo != null) {
@@ -109,14 +109,16 @@ final class NetworkReceiptPrinter {
         bold(out, true);
         textScale(out, 0x00);
         line(out, receipt.restaurantName);
-        bold(out, false);
+        bold(out, true);
         multilineCentered(out, receipt.headerText, width);
         line(out, repeat('-', width));
 
-        // Order identity and timestamp, close to the compact marketplace receipt layout.
+        // Large, clear order identity while still fitting 58mm paper.
         bold(out, true);
-        line(out, receipt.restaurantName + " #" + receipt.orderId);
-        bold(out, false);
+        textScale(out, 0x30); // double width + double height
+        line(out, "ORDER #" + receipt.orderId);
+        textScale(out, 0x00);
+        bold(out, true);
         DateTimeParts dateTime = formatDateTime(receipt.createdAt);
         line(out, dateTime.date.replace('/', '.') + " " + dateTime.time);
         line(out, repeat('-', width));
@@ -124,8 +126,10 @@ final class NetworkReceiptPrinter {
         if (!receipt.customerName.isEmpty()) {
             line(out, "Customer:");
             bold(out, true);
+            textScale(out, 0x10); // double height, normal width
             multilineCentered(out, receipt.customerName, width);
-            bold(out, false);
+            textScale(out, 0x00);
+            bold(out, true);
         }
         if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
             multilineCentered(out, receipt.customerPhone, width);
@@ -153,7 +157,7 @@ final class NetworkReceiptPrinter {
             line(out, "Ready time");
             bold(out, true);
             multilineCentered(out, prettyReadyTime(receipt.estimatedTime), width);
-            bold(out, false);
+            bold(out, true);
         }
 
         line(out, "");
@@ -178,10 +182,14 @@ final class NetworkReceiptPrinter {
 
             line(out, repeat('-', width));
             bold(out, true);
-            textScale(out, 0x10); // tall but narrow enough for 58mm
-            pair(out, "Total", money(receipt.totalAmount), width);
+            align(out, 0);
+            line(out, "TOTAL");
+            align(out, 1);
+            textScale(out, 0x30); // big, clear amount; short enough for 58mm
+            line(out, "AED " + money(receipt.totalAmount));
             textScale(out, 0x00);
-            bold(out, false);
+            bold(out, true);
+            align(out, 0);
 
             if (receipt.taxAmount > 0) pair(out, "VAT (Incl.)", money(receipt.taxAmount), width);
             else pair(out, "VAT (Incl.)", "--", width);
@@ -217,8 +225,12 @@ final class NetworkReceiptPrinter {
             if (linePrice <= 0 && unitPrice > 0) linePrice = unitPrice * quantity;
 
             String itemLine = quantity + " x " + label;
+            bold(out, true);
+            textScale(out, 0x10); // clearer item line without reducing usable width
             if (receipt.showItemPrices && linePrice > 0) pair(out, itemLine, money(linePrice), width);
             else wrapped(out, itemLine, width);
+            textScale(out, 0x00);
+            bold(out, true);
 
             if (!sizeName.isEmpty()) wrapped(out, "  " + quantity + " x " + pretty(sizeName) + " size", width);
 
@@ -506,7 +518,7 @@ final class NetworkReceiptPrinter {
         line(out, center(border, width));
         bold(out, true);
         line(out, center(content, width));
-        bold(out, false);
+        bold(out, true);
         line(out, center(border, width));
     }
 
@@ -572,7 +584,7 @@ final class NetworkReceiptPrinter {
         String left = printable(label).trim() + ":";
         bold(out, true);
         pair(out, left, value, width);
-        bold(out, false);
+        bold(out, true);
     }
 
     private static void pair(
