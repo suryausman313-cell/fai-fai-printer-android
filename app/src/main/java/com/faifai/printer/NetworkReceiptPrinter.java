@@ -192,18 +192,19 @@ final class NetworkReceiptPrinter {
             if (linePrice <= 0 && unitPrice > 0) linePrice = unitPrice * qty;
             double originalPrice = number(item, "original_price", "originalPrice", "original_total_price");
             double itemDiscount = number(item, "item_discount_amount", "itemDiscountAmount", "discount", "discount_amount", "item_discount");
+            if (itemDiscount <= 0 && originalPrice > linePrice && linePrice > 0) itemDiscount = originalPrice - linePrice;
             if (originalPrice <= 0) originalPrice = linePrice + Math.max(0, itemDiscount);
             double displayPrice = originalPrice > 0 ? originalPrice : linePrice;
-            y = bitmapItemWithPrice(canvas, paint, qty + " x " + name, receipt.showItemPrices && displayPrice > 0 ? money(displayPrice) : "", y + 18, width, margin);
-            if (!size.isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   " + pretty(size), y + 3, 23, true, width, margin + 8, right);
+            y = bitmapItemWithPrice(canvas, paint, qty + " x " + name, receipt.showItemPrices && displayPrice > 0 ? money(displayPrice) : "", y + 20, width, margin);
+            if (!size.isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   " + pretty(size), y + 4, 25, true, width, margin + 8, right);
             JSONArray extras = array(item, "extras", "selected_extras", "toppings");
             for (int e = 0; e < extras.length(); e++) {
                 Object extra = extras.opt(e);
                 String extraText = extra instanceof JSONObject ? first((JSONObject) extra, "name", "title", "label") : String.valueOf(extra == null ? "" : extra);
-                if (!extraText.trim().isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   + " + extraText.trim(), y + 3, 21, false, width, margin + 8, right);
+                if (!extraText.trim().isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   + " + extraText.trim(), y + 4, 23, false, width, margin + 8, right);
             }
-            if (itemDiscount > 0) y = bitmapPair(canvas, paint, "   Discount", "-" + money(itemDiscount), y + 5, 22, true, width, margin);
-            y += 20;
+            if (itemDiscount > 0) y = bitmapPair(canvas, paint, "   Discount", "-" + money(itemDiscount), y + 6, 24, true, width, margin);
+            y += 24;
         }
 
         // Customer note is printed as its own kitchen section between items and totals.
@@ -321,15 +322,15 @@ final class NetworkReceiptPrinter {
         int priceArea = price == null || price.isEmpty() ? 0 : 105;
         int textWidth = width - margin * 2 - priceArea;
         List<String> lines = bitmapWrap(p, itemText, textWidth, 27, true);
-        bitmapPaint(p, 27, true, Paint.Align.LEFT);
+        bitmapPaint(p, 29, true, Paint.Align.LEFT);
         int startY = y;
         for (String line : lines) {
-            c.drawText(line, margin, y + 27, p);
+            c.drawText(line, margin, y + 29, p);
             y += 32;
         }
         if (price != null && !price.isEmpty()) {
-            bitmapPaint(p, 25, true, Paint.Align.RIGHT);
-            c.drawText(price, width - margin, startY + 25, p);
+            bitmapPaint(p, 27, true, Paint.Align.RIGHT);
+            c.drawText(price, width - margin, startY + 27, p);
         }
         return y;
     }
