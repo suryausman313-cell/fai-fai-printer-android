@@ -138,26 +138,26 @@ final class NetworkReceiptPrinter {
 
         y = bitmapCentered(canvas, paint, receipt.restaurantName, y, 30, true, width, margin);
         if (!receipt.headerText.isEmpty()) y = bitmapCenteredWrapped(canvas, paint, receipt.headerText, y + 2, 19, false, width, margin);
-        y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+        y = bitmapSeparator(canvas, paint, y + 14, width, margin);
 
-        y = bitmapCentered(canvas, paint, "#" + receipt.orderId, y + 10, 38, true, width, margin);
+        y = bitmapCentered(canvas, paint, "#" + receipt.orderId, y + 16, 38, true, width, margin);
         DateTimeParts dt = formatDateTime(receipt.createdAt);
         String dtText = (dt.date + " " + dt.time).trim();
-        y = bitmapCentered(canvas, paint, dtText, y + 2, 23, true, width, margin);
-        y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+        y = bitmapCentered(canvas, paint, dtText, y + 6, 23, true, width, margin);
+        y = bitmapSeparator(canvas, paint, y + 14, width, margin);
 
         if (!receipt.customerName.isEmpty()) {
-            y = bitmapCentered(canvas, paint, "Customer:", y + 10, 23, true, width, margin);
-            y = bitmapCenteredWrapped(canvas, paint, receipt.customerName, y + 2, 27, true, width, margin);
+            y = bitmapCentered(canvas, paint, "Customer:", y + 16, 23, true, width, margin);
+            y = bitmapCenteredWrapped(canvas, paint, receipt.customerName, y + 5, 27, true, width, margin);
         }
         if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
-            y = bitmapCentered(canvas, paint, receipt.customerPhone, y + 2, 21, true, width, margin);
+            y = bitmapCentered(canvas, paint, receipt.customerPhone, y + 5, 21, true, width, margin);
         }
 
         String payment = pretty(receipt.paymentMethod);
         String paymentLower = payment.toLowerCase(Locale.US);
         if (receipt.showPaymentMethod && !payment.isEmpty()) {
-            y += 8;
+            y += 14;
             if (paymentLower.contains("cash")) {
                 String cash = receipt.orderType.toLowerCase(Locale.US).contains("pickup") ? "CASH ON PICKUP" : "CASH ON DELIVERY";
                 y = bitmapBox(canvas, paint, cash, y, width, margin);
@@ -168,18 +168,17 @@ final class NetworkReceiptPrinter {
             }
         }
 
-        if (!receipt.estimatedTime.isEmpty()) {
-            y = bitmapCentered(canvas, paint, receipt.orderType.toLowerCase(Locale.US).contains("pickup") ? "Pick up time" : "Ready time", y + 12, 24, false, width, margin);
-            y = bitmapCentered(canvas, paint, prettyReadyTime(receipt.estimatedTime), y + 1, 31, true, width, margin);
-        }
+        // Kitchen ready-time is intentionally not printed on the paper receipt.
+        // Keep the receipt focused on customer/payment/items/totals.
+        y += 18;
 
         int itemCount = 0;
         for (int i = 0; i < receipt.items.length(); i++) {
             JSONObject item = receipt.items.optJSONObject(i);
             if (item != null) itemCount += Math.max(1, integer(item, 1, "quantity", "qty"));
         }
-        y = bitmapCentered(canvas, paint, itemCount + (itemCount == 1 ? " Item" : " Items"), y + 5, 21, true, width, margin);
-        y = bitmapSeparator(canvas, paint, y + 7, width, margin);
+        y = bitmapCentered(canvas, paint, itemCount + (itemCount == 1 ? " Item" : " Items"), y + 12, 21, true, width, margin);
+        y = bitmapSeparator(canvas, paint, y + 12, width, margin);
 
         for (int i = 0; i < receipt.items.length(); i++) {
             JSONObject item = receipt.items.optJSONObject(i);
@@ -191,7 +190,7 @@ final class NetworkReceiptPrinter {
             double linePrice = number(item, "total_price", "line_total", "totalPrice");
             double unitPrice = number(item, "price", "unit_price");
             if (linePrice <= 0 && unitPrice > 0) linePrice = unitPrice * qty;
-            y = bitmapItemWithPrice(canvas, paint, qty + " x " + name, receipt.showItemPrices && linePrice > 0 ? money(linePrice) : "", y + 10, width, margin);
+            y = bitmapItemWithPrice(canvas, paint, qty + " x " + name, receipt.showItemPrices && linePrice > 0 ? money(linePrice) : "", y + 15, width, margin);
             if (!size.isEmpty()) y = bitmapLeftWrapped(canvas, paint, "   " + qty + " x " + pretty(size) + " size", y + 1, 21, true, width, margin + 8, right);
             JSONArray extras = array(item, "extras", "selected_extras", "toppings");
             for (int e = 0; e < extras.length(); e++) {
@@ -201,25 +200,31 @@ final class NetworkReceiptPrinter {
             }
             double itemDiscount = number(item, "discount", "discount_amount", "item_discount");
             if (itemDiscount > 0) y = bitmapPair(canvas, paint, "   Discount", "-" + money(itemDiscount), y + 1, 20, false, width, margin);
-            y += 7;
+            y += 13;
         }
 
-        y = bitmapSeparator(canvas, paint, y + 3, width, margin);
+        // Customer note is printed as its own kitchen section between items and totals.
+        y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+        if (!receipt.customerNotes.isEmpty()) {
+            y = bitmapLeftWrapped(canvas, paint, "NOTE", y + 12, 24, true, width, margin, right);
+            y = bitmapLeftWrapped(canvas, paint, receipt.customerNotes, y + 4, 23, true, width, margin, right);
+            y = bitmapSeparator(canvas, paint, y + 12, width, margin);
+        }
         if (receipt.showOrderTotals) {
-            if (receipt.subtotalAmount > 0) y = bitmapPair(canvas, paint, "Subtotal", money(receipt.subtotalAmount), y + 8, 23, false, width, margin);
+            if (receipt.subtotalAmount > 0) y = bitmapPair(canvas, paint, "Subtotal", money(receipt.subtotalAmount), y + 12, 23, false, width, margin);
             if (receipt.serviceFee > 0) y = bitmapPair(canvas, paint, "Service Fee", money(receipt.serviceFee), y + 3, 23, false, width, margin);
             if (receipt.smallOrderFee > 0) y = bitmapPair(canvas, paint, "Small Order Fee", money(receipt.smallOrderFee), y + 3, 23, false, width, margin);
             if (receipt.deliveryCharge > 0) y = bitmapPair(canvas, paint, "Delivery Fee", money(receipt.deliveryCharge), y + 3, 23, false, width, margin);
             if (receipt.discountAmount > 0) y = bitmapPair(canvas, paint, "Item Discounts", "-" + money(receipt.discountAmount), y + 3, 23, false, width, margin);
             if (receipt.tipAmount > 0) y = bitmapPair(canvas, paint, "Tip", money(receipt.tipAmount), y + 3, 23, false, width, margin);
-            y = bitmapSeparator(canvas, paint, y + 8, width, margin);
-            y = bitmapPair(canvas, paint, "TOTAL", money(receipt.totalAmount), y + 9, 32, true, width, margin);
+            y = bitmapSeparator(canvas, paint, y + 14, width, margin);
+            y = bitmapPair(canvas, paint, "TOTAL", money(receipt.totalAmount), y + 14, 32, true, width, margin);
             y = bitmapPair(canvas, paint, "VAT (Incl.)", receipt.taxAmount > 0 ? money(receipt.taxAmount) : "--", y + 6, 21, true, width, margin);
-            y = bitmapSeparator(canvas, paint, y + 8, width, margin);
+            y = bitmapSeparator(canvas, paint, y + 14, width, margin);
         }
 
-        if (!receipt.footerText.isEmpty()) y = bitmapCenteredWrapped(canvas, paint, receipt.footerText, y + 10, 18, false, width, margin);
-        y += 18;
+        if (!receipt.footerText.isEmpty()) y = bitmapCenteredWrapped(canvas, paint, receipt.footerText, y + 16, 18, false, width, margin);
+        y += 38;
         Bitmap cropped = Bitmap.createBitmap(page, 0, 0, width, Math.min(page.getHeight(), Math.max(120, y)));
         page.recycle();
         return cropped;
@@ -394,14 +399,8 @@ final class NetworkReceiptPrinter {
             }
         }
 
-        if (!receipt.estimatedTime.isEmpty()) {
-            line(out, "");
-            bold(out, true);
-            textScale(out, SCALE_TALL);
-            line(out, receipt.orderType.toLowerCase(Locale.US).contains("pickup") ? "Pick up time" : "Ready time");
-            multilineCentered(out, prettyReadyTime(receipt.estimatedTime), width);
-            textScale(out, SCALE_NORMAL);
-        }
+        // Do not print ready/pickup time on the paper receipt.
+        line(out, "");
 
         line(out, "");
         int itemCount = 0;
@@ -414,8 +413,15 @@ final class NetworkReceiptPrinter {
 
         printItems(out, receipt, width);
 
-        if (receipt.showOrderTotals) {
+        line(out, repeat('-', width));
+        if (!receipt.customerNotes.isEmpty()) {
+            bold(out, true);
+            line(out, "NOTE");
+            wrapped(out, receipt.customerNotes, width);
             line(out, repeat('-', width));
+        }
+
+        if (receipt.showOrderTotals) {
             if (receipt.subtotalAmount > 0) pair(out, "Subtotal", money(receipt.subtotalAmount), width);
             if (receipt.serviceFee > 0) pair(out, "Service Fee", money(receipt.serviceFee), width);
             if (receipt.smallOrderFee > 0) pair(out, "Small Order Fee", money(receipt.smallOrderFee), width);
@@ -993,6 +999,7 @@ final class NetworkReceiptPrinter {
         String customerPhone;
         String paymentMethod;
         String estimatedTime;
+        String customerNotes;
         JSONArray items;
         double subtotalAmount;
         double discountAmount;
@@ -1164,6 +1171,13 @@ final class NetworkReceiptPrinter {
                     "estimatedTime",
                     "estimated_time",
                     "ready_time"
+            );
+            result.customerNotes = first(
+                    order,
+                    "customerNotes",
+                    "customer_notes",
+                    "note",
+                    "notes"
             );
             result.items = array(order, "items", "items_json");
             result.subtotalAmount = number(
