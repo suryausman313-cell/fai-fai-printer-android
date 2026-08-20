@@ -87,96 +87,113 @@ final class NetworkReceiptPrinter {
         boolean is58mm = receipt.paperWidth.equals("58mm");
         int width = is58mm ? 32 : 48;
         int paperDots = is58mm ? 384 : 576;
-        int logoDots = is58mm ? 118 : 155;
+        int logoDots = is58mm ? 105 : 145;
 
-        command(out, 0x1B, 0x40); // initialize
+        command(out, 0x1B, 0x40); // ESC @ - initialize printer
         command(out, 0x1B, 0x4D, 0x00); // Font A
-        command(out, 0x1B, 0x33, 24); // compact Talabat-style line spacing
+        command(out, 0x1B, 0x33, 24); // compact marketplace-style line spacing
         doubleStrike(out, false);
         align(out, 1);
 
-        if (receipt.showLogo) {
-            try {
-                Bitmap logo = loadLogo(context, receipt.logoUrl);
-                if (logo != null) {
-                    rasterImageCentered(out, logo, paperDots, logoDots);
-                    logo.recycle();
-                }
-            } catch (Exception ignored) {
-                // Never block a receipt because of the logo.
+        // Keep Fai Fai branding, but use a smaller marketplace-style logo.
+        try {
+            Bitmap logo = loadLogo(context, receipt.logoUrl);
+            if (logo != null) {
+                rasterImageCentered(out, logo, paperDots, logoDots);
+                logo.recycle();
             }
+        } catch (Exception ignored) {
+            // Logo failure must never stop printing.
         }
 
         bold(out, true);
+        textScale(out, 0x00);
         line(out, receipt.restaurantName);
         bold(out, false);
         multilineCentered(out, receipt.headerText, width);
         line(out, repeat('-', width));
 
-        DateTimeParts dateTime = formatDateTime(receipt.createdAt);
-        align(out, 1);
+        // Order identity and timestamp, close to the compact marketplace receipt layout.
         bold(out, true);
-        textScale(out, 0x10);
-        line(out, "ORDER #" + receipt.orderId);
-        textScale(out, 0x00);
+        line(out, receipt.restaurantName + " #" + receipt.orderId);
         bold(out, false);
-        line(out, dateTime.date + "  " + dateTime.time);
-        line(out, pretty(receipt.orderType));
+        DateTimeParts dateTime = formatDateTime(receipt.createdAt);
+        line(out, dateTime.date.replace('/', '.') + " " + dateTime.time);
         line(out, repeat('-', width));
 
         if (!receipt.customerName.isEmpty()) {
+            line(out, "Customer:");
             bold(out, true);
-            textScale(out, 0x10);
             multilineCentered(out, receipt.customerName, width);
-            textScale(out, 0x00);
             bold(out, false);
         }
         if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
             multilineCentered(out, receipt.customerPhone, width);
         }
+        line(out, "");
 
-        if (receipt.showPaymentMethod && !receipt.paymentMethod.isEmpty()) {
-            line(out, "");
-            String payment = pretty(receipt.paymentMethod).toUpperCase(Locale.US);
-            String lower = receipt.paymentMethod.toLowerCase(Locale.US);
-            bold(out, true);
-            if (lower.contains("online") || lower.contains("prepaid") || lower.contains("credit") || lower.contains("card")) {
-                line(out, "[ PREPAID ]");
-                line(out, "[ " + payment + " ]");
+        // Payment stamp. Cash orders are never mislabeled as prepaid.
+        String payment = pretty(receipt.paymentMethod);
+        String paymentLower = payment.toLowerCase(Locale.US);
+        if (receipt.showPaymentMethod && !payment.isEmpty()) {
+            if (paymentLower.contains("cash")) {
+                boxedCentered(out, "CASH ON DELIVERY", width);
             } else {
-                line(out, "[ " + payment + " ]");
+                boxedCentered(out, "PREPAID", width);
+                if (paymentLower.contains("card") || paymentLower.contains("credit") || paymentLower.contains("debit")) {
+                    boxedCentered(out, "CREDIT CARD", width);
+                } else {
+                    boxedCentered(out, payment.toUpperCase(Locale.US), width);
+                }
             }
+        }
+
+        if (!receipt.estimatedTime.isEmpty()) {
+            line(out, "");
+            line(out, "Ready time");
+            bold(out, true);
+            multilineCentered(out, prettyReadyTime(receipt.estimatedTime), width);
             bold(out, false);
         }
 
         line(out, "");
+        int itemCount = 0;
+        for (int i = 0; i < receipt.items.length(); i++) {
+            JSONObject item = receipt.items.optJSONObject(i);
+            if (item != null) itemCount += Math.max(1, integer(item, 1, "quantity", "qty"));
+        }
+        line(out, itemCount + (itemCount == 1 ? " Item" : " Items"));
         line(out, repeat('-', width));
-        align(out, 0);
+
         printItems(out, receipt, width);
 
         if (receipt.showOrderTotals) {
             line(out, repeat('-', width));
             if (receipt.subtotalAmount > 0) pair(out, "Subtotal", money(receipt.subtotalAmount), width);
-            if (receipt.discountAmount > 0) pair(out, "Discount", "-" + money(receipt.discountAmount), width);
             if (receipt.serviceFee > 0) pair(out, "Service Fee", money(receipt.serviceFee), width);
             if (receipt.smallOrderFee > 0) pair(out, "Small Order Fee", money(receipt.smallOrderFee), width);
             if (receipt.deliveryCharge > 0) pair(out, "Delivery Fee", money(receipt.deliveryCharge), width);
+            if (receipt.discountAmount > 0) pair(out, "Item Discounts", "-" + money(receipt.discountAmount), width);
             if (receipt.tipAmount > 0) pair(out, "Tip", money(receipt.tipAmount), width);
 
             line(out, repeat('-', width));
             bold(out, true);
-            textScale(out, 0x10);
+            textScale(out, 0x10); // tall but narrow enough for 58mm
             pair(out, "Total", money(receipt.totalAmount), width);
             textScale(out, 0x00);
             bold(out, false);
+
             if (receipt.taxAmount > 0) pair(out, "VAT (Incl.)", money(receipt.taxAmount), width);
+            else pair(out, "VAT (Incl.)", "--", width);
             line(out, repeat('-', width));
         }
 
-        align(out, 1);
-        multilineCentered(out, receipt.footerText, width);
-        command(out, 0x1B, 0x64, 3);
+        if (!receipt.footerText.isEmpty()) {
+            align(out, 1);
+            multilineCentered(out, receipt.footerText, width);
+        }
 
+        command(out, 0x1B, 0x64, 3); // bottom feed
         if (receipt.cutPaper) command(out, 0x1D, 0x56, 0x00);
         return out.toByteArray();
     }
@@ -192,44 +209,32 @@ final class NetworkReceiptPrinter {
 
             int quantity = Math.max(1, integer(item, 1, "quantity", "qty"));
             String name = first(item, "name", "item_name", "title");
-            String sizeName = first(item, "size", "size_name");
-            String label = quantity + " x " + (name.isEmpty() ? "Item" : name);
+            String sizeName = first(item, "size", "size_name", "selectedSize");
+            String label = name.isEmpty() ? "Item" : name;
 
-            double price = number(item, "total_price", "line_total");
-            if (price <= 0) price = number(item, "price", "unit_price");
-            String amount = receipt.showItemPrices && price > 0 ? money(price) : "";
+            double linePrice = number(item, "total_price", "line_total", "totalPrice");
+            double unitPrice = number(item, "price", "unit_price");
+            if (linePrice <= 0 && unitPrice > 0) linePrice = unitPrice * quantity;
 
-            int amountWidth = receipt.paperWidth.equals("58mm") ? 10 : 12;
-            int labelWidth = Math.max(12, width - amountWidth - 1);
-            List<String> chunks = wrapChunks(label, labelWidth);
-            if (chunks.isEmpty()) chunks.add(label);
+            String itemLine = quantity + " x " + label;
+            if (receipt.showItemPrices && linePrice > 0) pair(out, itemLine, money(linePrice), width);
+            else wrapped(out, itemLine, width);
 
-            bold(out, true);
-            for (int lineIndex = 0; lineIndex < chunks.size(); lineIndex++) {
-                String right = lineIndex == 0 ? amount : "";
-                pair(out, chunks.get(lineIndex), right, width);
-            }
-            bold(out, false);
-
-            if (!sizeName.isEmpty()) {
-                wrapped(out, "   " + quantity + " x " + sizeName, width);
-            }
+            if (!sizeName.isEmpty()) wrapped(out, "  " + quantity + " x " + pretty(sizeName) + " size", width);
 
             JSONArray extras = array(item, "extras", "selected_extras", "toppings");
             for (int extraIndex = 0; extraIndex < extras.length(); extraIndex++) {
                 Object extra = extras.opt(extraIndex);
                 String extraText;
-                if (extra instanceof JSONObject) {
-                    extraText = first((JSONObject) extra, "name", "title", "label");
-                } else {
-                    extraText = String.valueOf(extra == null ? "" : extra);
-                }
-                if (!extraText.trim().isEmpty()) wrapped(out, "   + " + extraText, width);
+                if (extra instanceof JSONObject) extraText = first((JSONObject) extra, "name", "title", "label");
+                else extraText = String.valueOf(extra == null ? "" : extra);
+                if (!extraText.trim().isEmpty()) wrapped(out, "  + " + extraText, width);
             }
 
+            double itemDiscount = number(item, "discount", "discount_amount", "item_discount");
+            if (itemDiscount > 0) pair(out, "  Discount", "-" + money(itemDiscount), width);
             if (index < receipt.items.length() - 1) line(out, "");
         }
-        line(out, "");
     }
 
     private static Bitmap loadLogo(Context context, String rawSource) throws Exception {
@@ -492,6 +497,37 @@ final class NetworkReceiptPrinter {
         return result.toString();
     }
 
+    private static void boxedCentered(ByteArrayOutputStream out, String rawText, int width) throws Exception {
+        String value = printable(rawText).trim();
+        if (value.isEmpty()) return;
+        int inner = Math.min(Math.max(value.length() + 2, 10), Math.max(10, width - 4));
+        String border = "+" + repeat('-', inner) + "+";
+        String content = "|" + center(value, inner) + "|";
+        line(out, center(border, width));
+        bold(out, true);
+        line(out, center(content, width));
+        bold(out, false);
+        line(out, center(border, width));
+    }
+
+    private static String center(String rawValue, int width) {
+        String value = printable(rawValue).trim();
+        if (value.length() >= width) return value.substring(0, width);
+        int gap = width - value.length();
+        int left = gap / 2;
+        return repeat(' ', left) + value + repeat(' ', gap - left);
+    }
+
+    private static String prettyReadyTime(String rawValue) {
+        if (rawValue == null || rawValue.trim().isEmpty()) return "";
+        try {
+            DateTimeParts parts = formatDateTime(rawValue);
+            return parts.date.replace('/', '.') + " " + parts.time;
+        } catch (Exception ignored) {
+            return printable(rawValue);
+        }
+    }
+
     private static void command(ByteArrayOutputStream out, int... values) {
         for (int value : values) out.write(value);
     }
@@ -702,6 +738,7 @@ final class NetworkReceiptPrinter {
         String customerName;
         String customerPhone;
         String paymentMethod;
+        String estimatedTime;
         JSONArray items;
         double subtotalAmount;
         double discountAmount;
@@ -868,6 +905,12 @@ final class NetworkReceiptPrinter {
                     "paymentMethod",
                     "payment_method"
             );
+            result.estimatedTime = first(
+                    order,
+                    "estimatedTime",
+                    "estimated_time",
+                    "ready_time"
+            );
             result.items = array(order, "items", "items_json");
             result.subtotalAmount = number(
                     order,
@@ -894,7 +937,7 @@ final class NetworkReceiptPrinter {
                     "delivery_charge"
             );
             result.tipAmount = number(order, "tipAmount", "tip_amount");
-            result.taxAmount = number(order, "taxAmount", "tax_amount", "vat_amount");
+            result.taxAmount = number(order, "taxAmount", "tax_amount", "vat_amount", "vat");
             result.totalAmount = number(
                     order,
                     "totalAmount",

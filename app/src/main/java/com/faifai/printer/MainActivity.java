@@ -524,8 +524,9 @@ public class MainActivity extends Activity {
 
             printerExecutor.execute(() -> {
                 try {
-                    String route = PrinterRouter.print(MainActivity.this, payloadJson);
-                    showToast("Receipt printed - " + route);
+                    // Print successfully but stay silent on the Kitchen device.
+                    // Staff only need a popup when printing fails.
+                    PrinterRouter.print(MainActivity.this, payloadJson);
                 } catch (Exception error) {
                     String message = error.getMessage();
                     if (message == null || message.trim().isEmpty()) {
