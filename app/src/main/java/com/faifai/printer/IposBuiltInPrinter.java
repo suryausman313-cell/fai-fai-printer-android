@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
  * Built-in printer bridge for the Newpas Q2I.
  *
  * Important: receipt DESIGN is not created here. NetworkReceiptPrinter renders
- * the same ESC/POS bytes as the old receipt, then this class sends those exact
+ * the Talabat-style ESC/POS receipt bytes, then this class sends those exact
  * bytes to the Q2I iPos built-in printer service.
  */
 final class IposBuiltInPrinter {
@@ -86,8 +86,7 @@ final class IposBuiltInPrinter {
         ensureConnected();
         waitUntilReady();
 
-        // Reuse the OLD receipt renderer exactly; only the transport changes
-        // from network socket to the Q2I's built-in iPos printer.
+        // Render the clean Talabat-style receipt; only the transport is the Q2I built-in printer.
         byte[] receiptBytes = NetworkReceiptPrinter.renderForBuiltIn(appContext, payloadJson);
         if (receiptBytes == null || receiptBytes.length == 0) {
             throw new IllegalStateException("Receipt data is empty");
@@ -95,8 +94,8 @@ final class IposBuiltInPrinter {
 
         transactVoid(TX_PRINTER_INIT, data -> data.writeStrongBinder(callback));
 
-        // The V1.7 renderer produces a complete ESC/POS byte stream (font size,
-        // bold, alignment, spacing and raster logo commands included). The Q2I
+        // The renderer produces a complete ESC/POS byte stream (font size,
+        // bold, alignment and spacing included). The Q2I
         // vendor AIDL exposes transaction 17 specifically for ESC/POS commands,
         // so send the whole old receipt through that path to preserve its layout.
         transactVoid(TX_SEND_USER_CMD_DATA, data -> {

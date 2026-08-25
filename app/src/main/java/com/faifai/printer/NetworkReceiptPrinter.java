@@ -1,24 +1,14 @@
 package com.faifai.printer;
 
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Rect;
-import android.util.Base64;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.net.URL;
 import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -29,8 +19,6 @@ import java.util.TimeZone;
 
 final class NetworkReceiptPrinter {
     private static final Charset PRINTER_CHARSET = Charset.forName("CP437");
-    private static final String WEB_BASE_URL = "https://fai-fai-juice.pages.dev";
-    private static final String DEFAULT_LOGO_URL = WEB_BASE_URL + "/fai-fai-receipt-logo.png";
 
     private NetworkReceiptPrinter() {}
 
@@ -67,51 +55,38 @@ final class NetworkReceiptPrinter {
         return render(context, receipt);
     }
 
+    /**
+     * Clean Talabat-style thermal receipt.
+     * No bitmap/logo dependency: the receipt starts with a large shop name,
+     * then order details, customer details, item table and a large grand total.
+     */
     private static byte[] render(Context context, Receipt receipt) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        boolean is58mm = receipt.paperWidth.equals("58mm");
+        boolean is58mm = "58mm".equals(receipt.paperWidth);
         int width = is58mm ? 32 : 48;
-        int paperDots = is58mm ? 384 : 576;
-        int logoDots = is58mm ? 145 : 185;
 
-        command(out, 0x1B, 0x40); // ESC @ - initialize printer
-        command(out, 0x1B, 0x4D, 0x00); // ESC M 0 - Font A (clearer, Napoli-style)
-        command(out, 0x1B, 0x33, 30); // open, easy-to-read line spacing
-        doubleStrike(out, true); // darker single-width text across the receipt
+        command(out, 0x1B, 0x40);       // Initialize
+        command(out, 0x1B, 0x4D, 0x00); // Font A
+        command(out, 0x1B, 0x33, 28);   // Comfortable line spacing
         align(out, 1);
 
-        {
-            try {
-                Bitmap logo = loadLogo(context, receipt.logoUrl);
-                if (logo != null) {
-                    rasterImageCentered(out, logo, paperDots, logoDots);
-                    line(out, "");
-                    logo.recycle();
-                }
-            } catch (Exception ignored) {
-                // Logo failure must never stop the receipt.
-            }
-        }
-
-        // Clean heading with comfortable vertical spacing.
+        // Big clean shop heading, like the previously printed receipt.
         bold(out, true);
+        textScale(out, 0x11);
+        line(out, receipt.restaurantName.isEmpty() ? "Fai Fai Juice" : receipt.restaurantName);
         textScale(out, 0x00);
-        line(out, receipt.restaurantName);
         bold(out, false);
-
         multilineCentered(out, receipt.headerText, width);
-        line(out, "");
-        line(out, repeat('-', width));
+        line(out, repeat('=', width));
 
+        // Large order number.
         bold(out, true);
-        textScale(out, 0x11); // double width + height for order number
-        line(out, "ORDER #" + receipt.orderId);
+        textScale(out, 0x11);
+        line(out, "ORDER #" + (receipt.orderId.isEmpty() ? "-" : receipt.orderId));
         textScale(out, 0x00);
         bold(out, false);
-        line(out, "");
 
         DateTimeParts dateTime = formatDateTime(receipt.createdAt);
-
         align(out, 0);
         detailPair(out, "Date", dateTime.date, width);
         detailPair(out, "Time", dateTime.time, width);
@@ -120,29 +95,25 @@ final class NetworkReceiptPrinter {
             detailPair(out, "Payment", pretty(receipt.paymentMethod), width);
         }
 
-        line(out, "");
         line(out, repeat('-', width));
-
-        bold(out, true);
-        line(out, "CUSTOMER DETAILS");
-        bold(out, false);
-        line(out, "");
-
         if (!receipt.customerName.isEmpty()) {
-            detailPair(out, "Name", receipt.customerName, width);
+            detailPair(out, "Customer", receipt.customerName, width);
         }
         if (receipt.showCustomerPhone && !receipt.customerPhone.isEmpty()) {
             detailPair(out, "Phone", receipt.customerPhone, width);
         }
+        if (!receipt.customerAddress.isEmpty()) {
+            wrapped(out, "Address: " + receipt.customerAddress, width);
+        }
+        if (!receipt.customerNotes.isEmpty()) {
+            wrapped(out, "Notes: " + receipt.customerNotes, width);
+        }
 
-        line(out, "");
         line(out, repeat('-', width));
         printItems(out, receipt, width);
 
         if (receipt.showOrderTotals) {
             line(out, repeat('-', width));
-            line(out, "");
-
             if (receipt.subtotalAmount > 0) {
                 pair(out, "Subtotal", money(receipt.subtotalAmount), width);
             }
@@ -162,30 +133,22 @@ final class NetworkReceiptPrinter {
                 pair(out, "Tip", money(receipt.tipAmount), width);
             }
 
-            line(out, "");
             line(out, repeat('=', width));
             bold(out, true);
-            textScale(out, 0x10); // taller, bold total without breaking one line
-            pair(out, "TOTAL", money(receipt.totalAmount), width);
+            textScale(out, 0x10); // double-height, full paper width
+            pair(out, "GRAND TOTAL", money(receipt.totalAmount), width);
             textScale(out, 0x00);
             bold(out, false);
             line(out, repeat('=', width));
-            line(out, "");
         }
 
         align(out, 1);
         multilineCentered(out, receipt.footerText, width);
-
-        // Feed enough paper after the footer so the last line is fully visible
-        // and the cutter leaves a clean bottom margin.
-        command(out, 0x1B, 0x64, 4); // ESC d 4 - feed four lines
-
-        doubleStrike(out, false);
+        command(out, 0x1B, 0x64, 3); // bottom feed
 
         if (receipt.cutPaper) {
             command(out, 0x1D, 0x56, 0x00);
         }
-
         return out.toByteArray();
     }
 
@@ -268,128 +231,6 @@ final class NetworkReceiptPrinter {
 
         // Keep totals from touching the last item.
         line(out, "");
-    }
-
-    private static Bitmap loadLogo(Context context, String rawSource) throws Exception {
-        // The receipt logo is bundled inside the APK, so printing does not
-        // depend on internet, Cloudflare cache, or an Admin-uploaded URL.
-        Bitmap bundled = BitmapFactory.decodeResource(
-                context.getResources(),
-                R.drawable.fai_fai_receipt_logo
-        );
-        if (bundled != null) return bundled;
-
-        String source = resolveLogoSource(rawSource);
-
-        if (source.startsWith("data:image/")) {
-            int comma = source.indexOf(',');
-            if (comma < 0) return null;
-            byte[] bytes = Base64.decode(
-                    source.substring(comma + 1),
-                    Base64.DEFAULT
-            );
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-        }
-
-        HttpURLConnection connection =
-                (HttpURLConnection) new URL(source).openConnection();
-        connection.setConnectTimeout(8000);
-        connection.setReadTimeout(12000);
-        connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent", "FaiFaiPrinter/1.7");
-
-        try {
-            int status = connection.getResponseCode();
-            if (status < 200 || status >= 300) return null;
-            try (InputStream input = connection.getInputStream()) {
-                return BitmapFactory.decodeStream(input);
-            }
-        } finally {
-            connection.disconnect();
-        }
-    }
-
-    private static String resolveLogoSource(String rawSource) {
-        String source = rawSource == null ? "" : rawSource.trim();
-        if (source.isEmpty()) return DEFAULT_LOGO_URL;
-        if (source.startsWith("data:image/")) return source;
-        if (source.startsWith("http://") || source.startsWith("https://")) {
-            return source;
-        }
-        if (source.startsWith("/")) return WEB_BASE_URL + source;
-        return WEB_BASE_URL + "/" + source;
-    }
-
-    private static void rasterImageCentered(
-            ByteArrayOutputStream out,
-            Bitmap original,
-            int paperWidthDots,
-            int contentMaxWidthDots
-    ) {
-        int contentWidth = Math.min(contentMaxWidthDots, original.getWidth());
-        contentWidth = Math.max(8, contentWidth - (contentWidth % 8));
-        int contentHeight = Math.max(
-                1,
-                Math.round(
-                        original.getHeight()
-                                * (contentWidth / (float) original.getWidth())
-                )
-        );
-
-        int outputWidth = Math.max(8, paperWidthDots - (paperWidthDots % 8));
-        Bitmap prepared = Bitmap.createBitmap(
-                outputWidth,
-                contentHeight,
-                Bitmap.Config.ARGB_8888
-        );
-        Canvas canvas = new Canvas(prepared);
-        canvas.drawColor(Color.WHITE);
-
-        Paint paint = new Paint(
-                Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG
-        );
-        int left = Math.max(0, (outputWidth - contentWidth) / 2);
-        Rect destination = new Rect(
-                left,
-                0,
-                left + contentWidth,
-                contentHeight
-        );
-        canvas.drawBitmap(original, null, destination, paint);
-
-        int bytesPerRow = outputWidth / 8;
-        command(
-                out,
-                0x1D, 0x76, 0x30, 0x00,
-                bytesPerRow & 0xFF,
-                (bytesPerRow >> 8) & 0xFF,
-                contentHeight & 0xFF,
-                (contentHeight >> 8) & 0xFF
-        );
-
-        for (int y = 0; y < contentHeight; y++) {
-            for (int byteX = 0; byteX < bytesPerRow; byteX++) {
-                int packed = 0;
-                for (int bit = 0; bit < 8; bit++) {
-                    int pixel = prepared.getPixel(byteX * 8 + bit, y);
-                    int alpha = Color.alpha(pixel);
-                    int luminance = (
-                            Color.red(pixel) * 299
-                                    + Color.green(pixel) * 587
-                                    + Color.blue(pixel) * 114
-                    ) / 1000;
-
-                    // Higher threshold keeps pineapple/logo details visible
-                    // on a black-and-white thermal printer.
-                    if (alpha > 40 && luminance < 225) {
-                        packed |= (0x80 >> bit);
-                    }
-                }
-                out.write(packed);
-            }
-        }
-
-        prepared.recycle();
     }
 
     private static DateTimeParts formatDateTime(String rawValue) {
@@ -739,6 +580,8 @@ final class NetworkReceiptPrinter {
         String orderType;
         String customerName;
         String customerPhone;
+        String customerAddress;
+        String customerNotes;
         String paymentMethod;
         JSONArray items;
         double subtotalAmount;
@@ -825,9 +668,7 @@ final class NetworkReceiptPrinter {
             if (result.logoUrl.isEmpty()) {
                 result.logoUrl = first(settings, "logo_url", "logoUrl");
             }
-            if (result.logoUrl.isEmpty()) {
-                result.logoUrl = DEFAULT_LOGO_URL;
-            }
+            if (result.logoUrl.isEmpty()) result.logoUrl = "";
 
             result.headerText = first(
                     branding,
@@ -899,6 +740,20 @@ final class NetworkReceiptPrinter {
                     order,
                     "customerPhone",
                     "customer_phone"
+            );
+            result.customerAddress = first(
+                    order,
+                    "customerAddress",
+                    "customer_address",
+                    "delivery_address",
+                    "delivery_area_name",
+                    "delivery_zone_name"
+            );
+            result.customerNotes = first(
+                    order,
+                    "customerNotes",
+                    "customer_notes",
+                    "customerNote"
             );
             result.paymentMethod = first(
                     order,
