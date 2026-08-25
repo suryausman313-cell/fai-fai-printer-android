@@ -12,6 +12,7 @@
 
     <queries>
         <package android:name="com.iposprinter.iposprinterservice" />
+        <package android:name="com.android.launcher3" />
         <intent>
             <action android:name="com.iposprinter.iposprinterservice.IPosPrintService" />
         </intent>
@@ -43,14 +44,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-
-
-        <activity
-            android:name=".AdminActivity"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:screenOrientation="fullSensor" />
 
         <!-- Live Kitchen WebView / built-in printer bridge -->
         <activity
