@@ -39,6 +39,7 @@ public class KitchenActivity extends Activity {
     private static final long RETRY_DELAY_MS = 4000L;
 
     private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
+    private IposBuiltInPrinter builtInPrinter;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Handler syncHandler = new Handler(Looper.getMainLooper());
 
@@ -71,6 +72,8 @@ public class KitchenActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        builtInPrinter = new IposBuiltInPrinter(this);
+        builtInPrinter.bind();
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(2, 8, 23));
@@ -248,6 +251,10 @@ public class KitchenActivity extends Activity {
         mainHandler.removeCallbacksAndMessages(null);
         syncHandler.removeCallbacks(syncKitchen);
         printerExecutor.shutdownNow();
+        if (builtInPrinter != null) {
+            builtInPrinter.unbind();
+            builtInPrinter = null;
+        }
         if (webView != null) {
             webView.removeJavascriptInterface("VitaPrinter");
             webView.destroy();
@@ -336,8 +343,9 @@ public class KitchenActivity extends Activity {
 
             printerExecutor.execute(() -> {
                 try {
-                    NetworkReceiptPrinter.print(KitchenActivity.this, payloadJson);
-                    showToast("Receipt printed");
+                    if (builtInPrinter == null) throw new IllegalStateException("Built-in printer unavailable");
+                    builtInPrinter.printReceipt(payloadJson);
+                    showToast("Receipt printed on device");
                 } catch (Exception error) {
                     String message = error.getMessage();
                     if (message == null || message.trim().isEmpty()) {

@@ -126,31 +126,19 @@ public class MainActivity extends Activity {
         status.setLayoutParams(statusParams);
         root.addView(status);
 
-        Button open = new Button(this);
-        open.setText("TAP TO OPEN KITCHEN");
-        open.setTextColor(Color.WHITE);
-        open.setTextSize(17f);
-        open.setTypeface(Typeface.DEFAULT_BOLD);
-        open.setAllCaps(false);
-        open.setPadding(dp(22), dp(16), dp(22), dp(16));
+        Button openKitchen = makeActionButton("OPEN KITCHEN", Color.rgb(234, 88, 12));
+        openKitchen.setOnClickListener(v -> openKitchen());
+        root.addView(openKitchen);
 
-        GradientDrawable buttonBg = new GradientDrawable();
-        buttonBg.setColor(Color.rgb(234, 88, 12));
-        buttonBg.setCornerRadius(dp(16));
-        open.setBackground(buttonBg);
-
-        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        );
-        buttonParams.leftMargin = dp(14);
-        buttonParams.rightMargin = dp(14);
-        open.setLayoutParams(buttonParams);
-        open.setOnClickListener(v -> openKitchen());
-        root.addView(open);
+        Button openAdmin = makeActionButton("OPEN ADMIN", Color.rgb(22, 101, 52));
+        LinearLayout.LayoutParams adminParams = (LinearLayout.LayoutParams) openAdmin.getLayoutParams();
+        adminParams.topMargin = dp(12);
+        openAdmin.setLayoutParams(adminParams);
+        openAdmin.setOnClickListener(v -> openAdmin());
+        root.addView(openAdmin);
 
         TextView hint = new TextView(this);
-        hint.setText("Back from Live Kitchen returns here");
+        hint.setText("Back from Kitchen/Admin returns here");
         hint.setTextColor(Color.rgb(100, 116, 139));
         hint.setTextSize(12f);
         hint.setGravity(Gravity.CENTER);
@@ -163,6 +151,36 @@ public class MainActivity extends Activity {
         root.addView(hint);
 
         return root;
+    }
+
+    private Button makeActionButton(String label, int backgroundColor) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(17f);
+        button.setTypeface(Typeface.DEFAULT_BOLD);
+        button.setAllCaps(false);
+        button.setPadding(dp(22), dp(16), dp(22), dp(16));
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(backgroundColor);
+        bg.setCornerRadius(dp(16));
+        button.setBackground(bg);
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.leftMargin = dp(14);
+        params.rightMargin = dp(14);
+        button.setLayoutParams(params);
+        return button;
+    }
+
+    private void openAdmin() {
+        Intent intent = new Intent(this, AdminActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
     }
 
     private void openKitchen() {
