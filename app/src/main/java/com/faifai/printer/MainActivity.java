@@ -1,320 +1,197 @@
 package com.faifai.printer;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.Context;
-import android.content.Intent;
 import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.InputType;
-import android.view.Gravity;
+import android.content.Intent;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.view.KeyEvent;
-import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.widget.EditText;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.TextView;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.webkit.WebResourceRequest;
 import android.widget.Toast;
 
-/**
- * Fai Fai dedicated-device launcher.
- *
- * Boot lands here instead of opening the Kitchen WebView directly. Staff see
- * one Fai Fai Kitchen tile. Tapping it opens KitchenActivity. Device Owner +
- * Lock Task keeps Android Home/Recents/other apps hidden until Admin unlock.
- */
-public class MainActivity extends Activity {
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private TextView networkStatus;
-    private boolean backLongPressHandled = false;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-    private final Runnable wifiKeepAlive = new Runnable() {
+public class MainActivity extends Activity {
+    private static final String KITCHEN_URL = "https://fai-fai-juice.pages.dev/kitchen";
+
+    private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
+    private WebView webView;
+    private final Handler syncHandler = new Handler(Looper.getMainLooper());
+    private final Runnable syncKitchen = new Runnable() {
         @Override public void run() {
-            KioskManager.ensureWifiReady(MainActivity.this);
-            updateNetworkStatus();
-            handler.postDelayed(this, 8000);
+            if (webView != null) {
+                webView.evaluateJavascript(
+                    "(function(){try{return JSON.stringify({pin:localStorage.getItem('kitchen_pin')||'',sound:localStorage.getItem('kitchen_sound')!=='false'});}catch(e){return '{}';}})()",
+                    value -> new PrinterBridge().configureKitchen(value)
+                );
+            }
+            syncHandler.postDelayed(this, 5000);
         }
     };
 
+    @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 54);
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        KioskManager.ensureWifiReady(this);
-        setContentView(buildLauncher());
-        KioskManager.applyPolicies(this);
-    }
 
-    private View buildLauncher() {
-        final float density = getResources().getDisplayMetrics().density;
-        int pad = Math.round(24 * density);
-
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER_HORIZONTAL);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(Color.rgb(247, 248, 250));
-
-        LinearLayout.LayoutParams spacerTop = new LinearLayout.LayoutParams(1, 0, 2.2f);
-        root.addView(new View(this), spacerTop);
-
-        ImageView brandIcon = new ImageView(this);
-        brandIcon.setImageResource(R.drawable.ic_launcher);
-        brandIcon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        int logoSize = Math.round(88 * density);
-        root.addView(brandIcon, new LinearLayout.LayoutParams(logoSize, logoSize));
-
-        TextView title = new TextView(this);
-        title.setText("Fai Fai Juice");
-        title.setTextColor(Color.rgb(20, 28, 38));
-        title.setTextSize(24);
-        title.setGravity(Gravity.CENTER);
-        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        titleLp.topMargin = Math.round(8 * density);
-        root.addView(title, titleLp);
-
-        TextView byline = new TextView(this);
-        byline.setText("Mahi Shah");
-        byline.setTextColor(Color.rgb(35, 42, 52));
-        byline.setTextSize(11);
-        byline.setGravity(Gravity.CENTER);
-        byline.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        root.addView(byline, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+        webView = new WebView(this);
+        webView.setBackgroundColor(Color.rgb(2, 8, 23));
+        webView.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
         ));
 
-        LinearLayout.LayoutParams spacerMiddle = new LinearLayout.LayoutParams(1, 0, 0.8f);
-        root.addView(new View(this), spacerMiddle);
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        // Always load the latest live Kitchen frontend after an app/device restart.
+        // This bypasses stale WebView HTML/JS cache without clearing login/localStorage.
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.5");
+        webView.clearCache(true);
 
-        LinearLayout tile = new LinearLayout(this);
-        tile.setOrientation(LinearLayout.VERTICAL);
-        tile.setGravity(Gravity.CENTER);
-        tile.setPadding(Math.round(18 * density), Math.round(18 * density),
-                Math.round(18 * density), Math.round(16 * density));
-        tile.setClickable(true);
-        tile.setFocusable(true);
-        tile.setBackground(rounded(Color.WHITE, 22 * density, Color.rgb(226, 229, 234), 1 * density));
-        tile.setElevation(5 * density);
-        tile.setOnClickListener(v -> openKitchen());
-
-        ImageView appIcon = new ImageView(this);
-        appIcon.setImageResource(R.drawable.ic_launcher);
-        appIcon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        int appIconSize = Math.round(92 * density);
-        tile.addView(appIcon, new LinearLayout.LayoutParams(appIconSize, appIconSize));
-
-        TextView appName = new TextView(this);
-        appName.setText("Fai Fai Kitchen");
-        appName.setTextColor(Color.rgb(20, 28, 38));
-        appName.setTextSize(18);
-        appName.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        appName.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams nameLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        nameLp.topMargin = Math.round(10 * density);
-        tile.addView(appName, nameLp);
-
-        TextView tapText = new TextView(this);
-        tapText.setText("Tap to open");
-        tapText.setTextColor(Color.rgb(55, 63, 74));
-        tapText.setTextSize(11);
-        tapText.setGravity(Gravity.CENTER);
-        tapText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        tile.addView(tapText, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        ));
-
-        LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        tileLp.leftMargin = Math.round(22 * density);
-        tileLp.rightMargin = Math.round(22 * density);
-        root.addView(tile, tileLp);
-
-        LinearLayout.LayoutParams spacerBottom = new LinearLayout.LayoutParams(1, 0, 1.9f);
-        root.addView(new View(this), spacerBottom);
-
-        networkStatus = new TextView(this);
-        networkStatus.setTextSize(12);
-        networkStatus.setTextColor(Color.rgb(35, 42, 52));
-        networkStatus.setGravity(Gravity.CENTER);
-        networkStatus.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        networkStatus.setPadding(0, Math.round(4 * density), 0, Math.round(8 * density));
-        root.addView(networkStatus, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        ));
-
-        TextView adminHint = new TextView(this);
-        adminHint.setText("Admin");
-        adminHint.setTextColor(Color.rgb(180, 184, 191));
-        adminHint.setTextSize(9);
-        adminHint.setGravity(Gravity.CENTER);
-        adminHint.setPadding(Math.round(20 * density), Math.round(8 * density),
-                Math.round(20 * density), Math.round(10 * density));
-        adminHint.setOnLongClickListener(v -> {
-            showAdminExitDialog();
-            return true;
+        webView.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                syncHandler.removeCallbacks(syncKitchen);
+                syncHandler.post(syncKitchen);
+            }
         });
-        root.addView(adminHint, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        ));
+        webView.setWebChromeClient(new WebChromeClient());
+        webView.addJavascriptInterface(new PrinterBridge(), "VitaPrinter");
 
-        updateNetworkStatus();
-        return root;
+        setContentView(webView);
+        // Cache-busting query makes a new deploy visible immediately after restart.
+        // /kitchen still remains the same route and localStorage login is preserved.
+        webView.loadUrl(KITCHEN_URL + "?android_kitchen=" + System.currentTimeMillis());
     }
 
-    private GradientDrawable rounded(int fill, float radius, int stroke, float strokeWidth) {
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(fill);
-        bg.setCornerRadius(radius);
-        bg.setStroke(Math.max(1, Math.round(strokeWidth)), stroke);
-        return bg;
+    private void handleKitchenBack() {
+        if (webView == null) return;
+        // Kitchen is a React single-page screen. Order details are local UI state,
+        // not separate WebView history entries, so WebView.goBack() can exit the app.
+        // Let the live Kitchen page close the current order/drawer/history view instead.
+        webView.evaluateJavascript(
+                "(function(){try{window.dispatchEvent(new Event('fai-fai-kitchen-back'));return true;}catch(e){return false;}})()",
+                null
+        );
     }
 
-    private void openKitchen() {
-        KioskManager.ensureWifiReady(this);
-        Intent intent = new Intent(this, KitchenActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        startActivity(intent);
-    }
-
-    private boolean isOnline() {
-        try {
-            ConnectivityManager manager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (manager == null) return false;
-            Network network = manager.getActiveNetwork();
-            if (network == null) return false;
-            NetworkCapabilities caps = manager.getNetworkCapabilities(network);
-            return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private void updateNetworkStatus() {
-        if (networkStatus == null) return;
-        networkStatus.setText(isOnline() ? "Wi-Fi connected" : "Connecting Wi-Fi...");
-    }
-
-    private String currentAdminExitPin() {
-        String saved = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
-                .getString("pin", "");
-        if (saved != null && saved.trim().length() >= 4) return saved.trim();
-        return "2468";
-    }
-
-    private void showAdminExitDialog() {
-        if (!KioskManager.isDeviceOwner(this)) {
-            Toast.makeText(this, "Kiosk setup is not activated on this device", Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        EditText input = new EditText(this);
-        input.setHint("Admin PIN");
-        input.setSingleLine(true);
-        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Admin unlock")
-                .setMessage("Enter Admin/Kitchen PIN to show Android apps and Settings")
-                .setView(input)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Unlock", null)
-                .create();
-
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
-                    String entered = input.getText() == null ? "" : input.getText().toString().trim();
-                    if (!entered.equals(currentAdminExitPin())) {
-                        input.setError("Wrong PIN");
-                        return;
-                    }
-                    dialog.dismiss();
-                    KioskManager.exitForAdmin(MainActivity.this);
-                }));
-        dialog.show();
-    }
-
+    @SuppressWarnings("deprecation")
     @Override
-    protected void onResume() {
-        super.onResume();
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        KioskManager.ensureWifiReady(this);
-        KioskManager.enter(this);
-        handler.removeCallbacks(wifiKeepAlive);
-        handler.post(wifiKeepAlive);
-
-        String pin = getSharedPreferences("fai_fai_kitchen", Context.MODE_PRIVATE)
-                .getString("pin", "");
-        if (pin != null && pin.trim().length() >= 4) {
-            Intent service = new Intent(this, KitchenOrderService.class);
-            service.setAction(KitchenOrderService.ACTION_START);
-            try {
-                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service);
-                else startService(service);
-            } catch (Exception ignored) { }
-        }
-    }
-
-    @Override
-    protected void onPause() {
-        handler.removeCallbacks(wifiKeepAlive);
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        super.onPause();
-    }
-
-    @Override
-    protected void onDestroy() {
-        handler.removeCallbacksAndMessages(null);
-        super.onDestroy();
+    public void onBackPressed() {
+        handleKitchenBack();
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (event.getRepeatCount() == 0) {
-                backLongPressHandled = false;
-                event.startTracking();
-            }
+            handleKitchenBack();
             return true;
         }
         return super.onKeyDown(keyCode, event);
     }
 
     @Override
-    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            backLongPressHandled = true;
-            showAdminExitDialog();
-            return true;
+    protected void onDestroy() {
+        syncHandler.removeCallbacks(syncKitchen);
+        printerExecutor.shutdownNow();
+        if (webView != null) {
+            webView.removeJavascriptInterface("VitaPrinter");
+            webView.destroy();
         }
-        return super.onKeyLongPress(keyCode, event);
+        super.onDestroy();
     }
 
-    @Override
-    public boolean onKeyUp(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            backLongPressHandled = false;
+    private void showToast(String message) {
+        runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
+    }
+
+    public final class PrinterBridge {
+        @JavascriptInterface
+        public void configureKitchen(String rawJson) {
+            String json = rawJson == null ? "" : rawJson;
+            if (json.startsWith("\"") && json.endsWith("\"")) {
+                json = json.substring(1, json.length() - 1)
+                        .replace("\\\"", "\"").replace("\\\\", "\\");
+            }
+            try {
+                org.json.JSONObject data = new org.json.JSONObject(json);
+                String pin = data.optString("pin", "").trim();
+                boolean sound = data.optBoolean("sound", true);
+                getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE).edit()
+                        .putString("pin", pin).putBoolean("sound", sound).apply();
+                if (pin.length() >= 4) {
+                    Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
+                    service.setAction(KitchenOrderService.ACTION_START);
+                    startForegroundService(service);
+                }
+            } catch (Exception ignored) { }
+        }
+
+        @JavascriptInterface
+        public void stopOrderAlarm() {
+            Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
+        }
+
+        @JavascriptInterface
+        public boolean isAvailable() {
             return true;
         }
-        return super.onKeyUp(keyCode, event);
+
+        @JavascriptInterface
+        public boolean handlesLateAlerts() {
+            // KitchenOrderService polls the backend and owns late voice so
+            // late voice alerts keep working even when this WebView is backgrounded.
+            return true;
+        }
+
+        @JavascriptInterface
+        public String printReceipt(String payloadJson) {
+            if (payloadJson == null || payloadJson.trim().isEmpty()) {
+                return "error: empty receipt";
+            }
+
+            printerExecutor.execute(() -> {
+                try {
+                    NetworkReceiptPrinter.print(MainActivity.this, payloadJson);
+                    showToast("Receipt printed");
+                } catch (Exception error) {
+                    String message = error.getMessage();
+                    if (message == null || message.trim().isEmpty()) {
+                        message = error.getClass().getSimpleName();
+                    }
+                    showToast("Print failed: " + message);
+                }
+            });
+
+            return "queued";
+        }
     }
 }
