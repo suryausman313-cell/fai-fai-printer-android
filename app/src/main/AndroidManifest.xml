@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <queries>
+        <package android:name="com.iposprinter.iposprinterservice" />
+        <intent>
+            <action android:name="com.iposprinter.iposprinterservice.IPosPrintService" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
@@ -37,7 +44,15 @@
             </intent-filter>
         </activity>
 
-        <!-- Live Kitchen WebView / printer bridge -->
+
+        <activity
+            android:name=".AdminActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="fullSensor" />
+
+        <!-- Live Kitchen WebView / built-in printer bridge -->
         <activity
             android:name=".KitchenActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
