@@ -4,45 +4,30 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 
+/** Starts background order checking and restores the dedicated Fai Fai home after reboot. */
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (intent == null || !Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
-            return;
-        }
-
-        // Restore saved Wi-Fi first, then restore Device Owner / Lock Task.
-        // Android remembers the SSID/password; this app never stores it.
-        KioskManager.ensureWifiReady(context);
-        boolean kioskReady = KioskManager.applyPolicies(context);
-
-        String pin = context.getSharedPreferences("fai_fai_kitchen", Context.MODE_PRIVATE)
-                .getString("pin", "");
-        if (pin != null && pin.trim().length() >= 4) {
+        try {
             Intent service = new Intent(context, KitchenOrderService.class);
             service.setAction(KitchenOrderService.ACTION_START);
-            try {
-                if (Build.VERSION.SDK_INT >= 26) {
-                    context.startForegroundService(service);
-                } else {
-                    context.startService(service);
-                }
-            } catch (Exception ignored) {
-                // MainActivity starts the same service again when opened.
-            }
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(service);
+            else context.startService(service);
+        } catch (Exception ignored) {
         }
 
-        // Device Owner apps are allowed to bring their dedicated UI up after
-        // boot on the NETUM terminal. MainActivity enters Lock Task in onResume.
-        if (kioskReady) {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
             try {
-                Intent launch = new Intent(context, MainActivity.class);
-                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                Intent home = new Intent(context, MainActivity.class);
+                home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                         | Intent.FLAG_ACTIVITY_CLEAR_TOP
                         | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                context.startActivity(launch);
-            } catch (Exception ignored) { }
-        }
+                context.startActivity(home);
+            } catch (Exception ignored) {
+            }
+        }, 2500L);
     }
 }

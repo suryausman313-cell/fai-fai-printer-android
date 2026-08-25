@@ -2,8 +2,6 @@ package com.faifai.printer;
 
 import android.app.admin.DeviceAdminReceiver;
 
-/**
- * Device-owner receiver used only for dedicated Kitchen kiosk policies.
- */
+/** Keep this exact component name: the device is already provisioned with it as Device Owner. */
 public class KioskDeviceAdminReceiver extends DeviceAdminReceiver {
 }

@@ -1,197 +1,200 @@
 package com.faifai.printer;
 
-import android.annotation.SuppressLint;
-import android.app.Activity;
-import android.graphics.Color;
-import android.os.Bundle;
-import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
-import android.content.Intent;
 import android.Manifest;
+import android.app.Activity;
+import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
+import android.os.Bundle;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.webkit.JavascriptInterface;
-import android.webkit.WebChromeClient;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
-import android.webkit.WebResourceRequest;
-import android.widget.Toast;
+import android.widget.Button;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
+/**
+ * Dedicated-device home screen.
+ *
+ * The Kitchen WebView lives in KitchenActivity. Keeping a separate MainActivity
+ * restores the old "Tap to open" screen and gives the hardware Back button a
+ * real destination when Kitchen is already at its Live root.
+ */
 public class MainActivity extends Activity {
-    private static final String KITCHEN_URL = "https://fai-fai-juice.pages.dev/kitchen";
 
-    private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
-    private WebView webView;
-    private final Handler syncHandler = new Handler(Looper.getMainLooper());
-    private final Runnable syncKitchen = new Runnable() {
-        @Override public void run() {
-            if (webView != null) {
-                webView.evaluateJavascript(
-                    "(function(){try{return JSON.stringify({pin:localStorage.getItem('kitchen_pin')||'',sound:localStorage.getItem('kitchen_sound')!=='false'});}catch(e){return '{}';}})()",
-                    value -> new PrinterBridge().configureKitchen(value)
-                );
-            }
-            syncHandler.postDelayed(this, 5000);
-        }
-    };
-
-    @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 54);
         }
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        webView = new WebView(this);
-        webView.setBackgroundColor(Color.rgb(2, 8, 23));
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        configureDedicatedDeviceMode();
+        startKitchenService();
+        setContentView(buildHomeScreen());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        configureDedicatedDeviceMode();
+        startKitchenService();
+    }
+
+    private void configureDedicatedDeviceMode() {
+        try {
+            DevicePolicyManager dpm =
+                    (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
+            ComponentName admin = new ComponentName(this, KioskDeviceAdminReceiver.class);
+
+            if (dpm != null && dpm.isDeviceOwnerApp(getPackageName())) {
+                dpm.setLockTaskPackages(admin, new String[]{getPackageName()});
+
+                // Make this clean Fai Fai screen the dedicated device HOME.
+                // This also prevents the black/empty launcher screen after reboot.
+                IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
+                homeFilter.addCategory(Intent.CATEGORY_HOME);
+                homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
+                dpm.addPersistentPreferredActivity(
+                        admin,
+                        homeFilter,
+                        new ComponentName(this, MainActivity.class)
+                );
+            }
+
+            if (dpm != null && dpm.isLockTaskPermitted(getPackageName())) {
+                try {
+                    startLockTask();
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception ignored) {
+            // If the device is not owner-managed, the app still works normally.
+        }
+    }
+
+    private LinearLayout buildHomeScreen() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER);
+        root.setPadding(dp(28), dp(28), dp(28), dp(28));
+        root.setBackgroundColor(Color.rgb(2, 8, 23));
+        root.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
 
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        // Always load the latest live Kitchen frontend after an app/device restart.
-        // This bypasses stale WebView HTML/JS cache without clearing login/localStorage.
-        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/1.5");
-        webView.clearCache(true);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(com.faifai.printer.R.drawable.ic_launcher);
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(96), dp(96));
+        iconParams.bottomMargin = dp(20);
+        icon.setLayoutParams(iconParams);
+        root.addView(icon);
 
-        webView.setWebViewClient(new WebViewClient() {
-            @Override public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                syncHandler.removeCallbacks(syncKitchen);
-                syncHandler.post(syncKitchen);
-            }
-        });
-        webView.setWebChromeClient(new WebChromeClient());
-        webView.addJavascriptInterface(new PrinterBridge(), "VitaPrinter");
+        TextView title = new TextView(this);
+        title.setText("FAI FAI KITCHEN");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(27f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER);
+        root.addView(title);
 
-        setContentView(webView);
-        // Cache-busting query makes a new deploy visible immediately after restart.
-        // /kitchen still remains the same route and localStorage login is preserved.
-        webView.loadUrl(KITCHEN_URL + "?android_kitchen=" + System.currentTimeMillis());
+        TextView status = new TextView(this);
+        status.setText("Kitchen device ready\nNew orders stay active in background");
+        status.setTextColor(Color.rgb(148, 163, 184));
+        status.setTextSize(15f);
+        status.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        statusParams.topMargin = dp(10);
+        statusParams.bottomMargin = dp(30);
+        status.setLayoutParams(statusParams);
+        root.addView(status);
+
+        Button open = new Button(this);
+        open.setText("TAP TO OPEN KITCHEN");
+        open.setTextColor(Color.WHITE);
+        open.setTextSize(17f);
+        open.setTypeface(Typeface.DEFAULT_BOLD);
+        open.setAllCaps(false);
+        open.setPadding(dp(22), dp(16), dp(22), dp(16));
+
+        GradientDrawable buttonBg = new GradientDrawable();
+        buttonBg.setColor(Color.rgb(234, 88, 12));
+        buttonBg.setCornerRadius(dp(16));
+        open.setBackground(buttonBg);
+
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        buttonParams.leftMargin = dp(14);
+        buttonParams.rightMargin = dp(14);
+        open.setLayoutParams(buttonParams);
+        open.setOnClickListener(v -> openKitchen());
+        root.addView(open);
+
+        TextView hint = new TextView(this);
+        hint.setText("Back from Live Kitchen returns here");
+        hint.setTextColor(Color.rgb(100, 116, 139));
+        hint.setTextSize(12f);
+        hint.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        hintParams.topMargin = dp(18);
+        hint.setLayoutParams(hintParams);
+        root.addView(hint);
+
+        return root;
     }
 
-    private void handleKitchenBack() {
-        if (webView == null) return;
-        // Kitchen is a React single-page screen. Order details are local UI state,
-        // not separate WebView history entries, so WebView.goBack() can exit the app.
-        // Let the live Kitchen page close the current order/drawer/history view instead.
-        webView.evaluateJavascript(
-                "(function(){try{window.dispatchEvent(new Event('fai-fai-kitchen-back'));return true;}catch(e){return false;}})()",
-                null
-        );
+    private void openKitchen() {
+        Intent intent = new Intent(this, KitchenActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
+    }
+
+    private void startKitchenService() {
+        try {
+            Intent service = new Intent(this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    // Dedicated home screen must not exit to the normal Android launcher.
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) return true;
+        return super.onKeyDown(keyCode, event);
     }
 
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
-        handleKitchenBack();
-    }
-
-    @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            handleKitchenBack();
-            return true;
-        }
-        return super.onKeyDown(keyCode, event);
-    }
-
-    @Override
-    protected void onDestroy() {
-        syncHandler.removeCallbacks(syncKitchen);
-        printerExecutor.shutdownNow();
-        if (webView != null) {
-            webView.removeJavascriptInterface("VitaPrinter");
-            webView.destroy();
-        }
-        super.onDestroy();
-    }
-
-    private void showToast(String message) {
-        runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
-    }
-
-    public final class PrinterBridge {
-        @JavascriptInterface
-        public void configureKitchen(String rawJson) {
-            String json = rawJson == null ? "" : rawJson;
-            if (json.startsWith("\"") && json.endsWith("\"")) {
-                json = json.substring(1, json.length() - 1)
-                        .replace("\\\"", "\"").replace("\\\\", "\\");
-            }
-            try {
-                org.json.JSONObject data = new org.json.JSONObject(json);
-                String pin = data.optString("pin", "").trim();
-                boolean sound = data.optBoolean("sound", true);
-                getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE).edit()
-                        .putString("pin", pin).putBoolean("sound", sound).apply();
-                if (pin.length() >= 4) {
-                    Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
-                    service.setAction(KitchenOrderService.ACTION_START);
-                    startForegroundService(service);
-                }
-            } catch (Exception ignored) { }
-        }
-
-        @JavascriptInterface
-        public void stopOrderAlarm() {
-            Intent service = new Intent(MainActivity.this, KitchenOrderService.class);
-            service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
-            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
-            else startService(service);
-        }
-
-        @JavascriptInterface
-        public boolean isAvailable() {
-            return true;
-        }
-
-        @JavascriptInterface
-        public boolean handlesLateAlerts() {
-            // KitchenOrderService polls the backend and owns late voice so
-            // late voice alerts keep working even when this WebView is backgrounded.
-            return true;
-        }
-
-        @JavascriptInterface
-        public String printReceipt(String payloadJson) {
-            if (payloadJson == null || payloadJson.trim().isEmpty()) {
-                return "error: empty receipt";
-            }
-
-            printerExecutor.execute(() -> {
-                try {
-                    NetworkReceiptPrinter.print(MainActivity.this, payloadJson);
-                    showToast("Receipt printed");
-                } catch (Exception error) {
-                    String message = error.getMessage();
-                    if (message == null || message.trim().isEmpty()) {
-                        message = error.getClass().getSimpleName();
-                    }
-                    showToast("Print failed: " + message);
-                }
-            });
-
-            return "queued";
-        }
+        // Stay on dedicated Fai Fai home.
     }
 }

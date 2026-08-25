@@ -1,83 +1,61 @@
 package com.faifai.printer;
 
-import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.text.InputType;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.speech.tts.TextToSpeech;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
-import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
-import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
+import org.json.JSONObject;
+
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/** Live Fai Fai Kitchen WebView + printer bridge. */
 public class KitchenActivity extends Activity {
     private static final String KITCHEN_URL = "https://fai-fai-juice.pages.dev/kitchen";
-    private static final int PERMISSION_REQUEST = 54;
+    private static final long RETRY_DELAY_MS = 4000L;
 
     private final ExecutorService printerExecutor = Executors.newSingleThreadExecutor();
-    private WebView webView;
-    private TextView connectionStatus;
-    private ConnectivityManager connectivityManager;
-    private ConnectivityManager.NetworkCallback networkCallback;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Handler syncHandler = new Handler(Looper.getMainLooper());
-    private final Handler webHandler = new Handler(Looper.getMainLooper());
-    private boolean backLongPressHandled = false;
-    private boolean mainFrameFailed = false;
-    private boolean kitchenPageReady = false;
-    private boolean destroyed = false;
-    private TextToSpeech textToSpeech;
-    private volatile boolean textToSpeechReady = false;
 
-    private final Runnable retryKitchenPage = new Runnable() {
-        @Override public void run() {
-            if (destroyed || webView == null || kitchenPageReady) return;
-            if (!isNetworkOnline()) {
-                showConnectionStatus("No internet. Reconnecting...");
-                scheduleKitchenRetry(5000);
-                return;
-            }
-            showConnectionStatus("Connecting to Fai Fai Kitchen...");
-            mainFrameFailed = false;
-            webView.stopLoading();
-            webView.loadUrl(KITCHEN_URL);
+    private WebView webView;
+    private TextView loadingView;
+    private boolean mainFrameFailed = false;
+
+    private final Runnable retryKitchen = new Runnable() {
+        @Override
+        public void run() {
+            loadKitchenFresh();
         }
     };
 
     private final Runnable syncKitchen = new Runnable() {
-        @Override public void run() {
+        @Override
+        public void run() {
             if (webView != null) {
                 webView.evaluateJavascript(
                         "(function(){try{return JSON.stringify({pin:localStorage.getItem('kitchen_pin')||'',sound:localStorage.getItem('kitchen_sound')!=='false'});}catch(e){return '{}';}})()",
@@ -92,29 +70,32 @@ public class KitchenActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        requestRequiredPermissions();
-        KioskManager.ensureWifiReady(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        // Native Kitchen voice. The web page already calls VitaPrinter.speakText()
-        // for late/ready announcements. Keeping TTS native makes the orange POS
-        // device speak the same order-number message after the existing single Kitchen alert tone.
-        textToSpeech = new TextToSpeech(getApplicationContext(), status -> {
-            if (status == TextToSpeech.SUCCESS && textToSpeech != null) {
-                int result = textToSpeech.setLanguage(Locale.US);
-                textToSpeech.setSpeechRate(0.90f);
-                textToSpeech.setPitch(1.0f);
-                textToSpeechReady = result != TextToSpeech.LANG_MISSING_DATA
-                        && result != TextToSpeech.LANG_NOT_SUPPORTED;
-            }
-        });
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.rgb(2, 8, 23));
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(2, 8, 23));
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        webView.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
+
+        loadingView = new TextView(this);
+        loadingView.setText("FAI FAI KITCHEN\nConnecting...");
+        loadingView.setTextColor(Color.WHITE);
+        loadingView.setTextSize(20f);
+        loadingView.setGravity(Gravity.CENTER);
+        loadingView.setBackgroundColor(Color.rgb(2, 8, 23));
+        loadingView.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        root.addView(webView);
+        root.addView(loadingView);
+        setContentView(root);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -124,409 +105,159 @@ public class KitchenActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        settings.setUserAgentString(settings.getUserAgentString() + " FaiFaiPrinter/2.0");
 
-        // NETUM/P58 has a narrow POS screen. Keep the Kitchen page readable but
-        // slightly more compact without changing the public web app on other devices.
-        float widthDp = getResources().getDisplayMetrics().widthPixels
-                / getResources().getDisplayMetrics().density;
-        settings.setTextZoom(widthDp <= 600f ? 75 : 100);
-        settings.setSupportZoom(false);
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-
-        settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiKitchen/1.21.0"
-        );
+        // Clear stale HTML/JS only. DOM storage (including kitchen login) is preserved.
+        webView.clearCache(true);
 
         webView.setWebViewClient(new WebViewClient() {
-            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+            @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
-                if (url != null && url.contains("fai-fai-juice.pages.dev")) {
-                    kitchenPageReady = false;
+                if (url != null && url.startsWith(KITCHEN_URL)) {
                     mainFrameFailed = false;
-                    showConnectionStatus("Loading Fai Fai Kitchen...");
+                    showConnecting("FAI FAI KITCHEN\nLoading...");
                 }
             }
 
-            @Override public void onPageFinished(WebView view, String url) {
+            @Override
+            public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                if (!mainFrameFailed && url != null && url.contains("fai-fai-juice.pages.dev")) {
-                    kitchenPageReady = true;
-                    webHandler.removeCallbacks(retryKitchenPage);
-                    hideConnectionStatus();
+                if (url != null && url.startsWith(KITCHEN_URL) && !mainFrameFailed) {
+                    mainHandler.removeCallbacks(retryKitchen);
+                    hideConnecting();
                     syncHandler.removeCallbacks(syncKitchen);
                     syncHandler.post(syncKitchen);
                 }
             }
 
-            @Override public void onReceivedError(
-                    WebView view,
-                    WebResourceRequest request,
-                    WebResourceError error
-            ) {
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
                 if (request != null && request.isForMainFrame()) {
                     mainFrameFailed = true;
-                    kitchenPageReady = false;
-                    String message = isNetworkOnline()
-                            ? "Kitchen page did not load. Retrying..."
-                            : "No internet. Reconnecting...";
-                    showConnectionStatus(message);
-                    scheduleKitchenRetry(3000);
+                    showConnecting("FAI FAI KITCHEN\nWaiting for internet...");
+                    scheduleRetry();
                 }
             }
 
-            @Override public void onReceivedHttpError(
-                    WebView view,
-                    WebResourceRequest request,
-                    WebResourceResponse errorResponse
-            ) {
-                super.onReceivedHttpError(view, request, errorResponse);
-                if (request != null && request.isForMainFrame() && errorResponse != null) {
-                    mainFrameFailed = true;
-                    kitchenPageReady = false;
-                    showConnectionStatus("Kitchen server error "
-                            + errorResponse.getStatusCode() + ". Retrying...");
-                    scheduleKitchenRetry(5000);
-                }
-            }
-
-            @Override public boolean onRenderProcessGone(
-                    WebView view,
-                    RenderProcessGoneDetail detail
-            ) {
-                showConnectionStatus("Kitchen display restarting...");
-                webHandler.postDelayed(() -> {
-                    if (!destroyed) recreate();
-                }, 800);
-                return true;
+            @SuppressWarnings("deprecation")
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                super.onReceivedError(view, errorCode, description, failingUrl);
+                mainFrameFailed = true;
+                showConnecting("FAI FAI KITCHEN\nWaiting for internet...");
+                scheduleRetry();
             }
         });
+
         webView.setWebChromeClient(new WebChromeClient());
         webView.addJavascriptInterface(new PrinterBridge(), "VitaPrinter");
 
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.rgb(2, 8, 23));
-        root.addView(webView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-
-        connectionStatus = new TextView(this);
-        connectionStatus.setTextColor(Color.WHITE);
-        connectionStatus.setBackgroundColor(Color.rgb(2, 8, 23));
-        connectionStatus.setGravity(Gravity.CENTER);
-        connectionStatus.setTextSize(widthDp <= 600f ? 16f : 18f);
-        connectionStatus.setPadding(24, 24, 24, 24);
-        root.addView(connectionStatus, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        showConnectionStatus("Connecting to Fai Fai Kitchen...");
-
-        setContentView(root);
-        registerNetworkRecovery();
-
-        // Full dedicated-device kiosk is enabled when this app is provisioned
-        // as Android Device Owner. Normal app operation is unchanged otherwise.
-        KioskManager.applyPolicies(this);
-        if (isNetworkOnline()) {
-            webView.loadUrl(KITCHEN_URL);
-        } else {
-            showConnectionStatus("No internet. Reconnecting...");
-            scheduleKitchenRetry(3000);
-        }
+        startKitchenService();
+        loadKitchenFresh();
     }
 
-    private void showConnectionStatus(String message) {
-        runOnUiThread(() -> {
-            if (connectionStatus == null) return;
-            connectionStatus.setText(message == null ? "Connecting..." : message);
-            connectionStatus.setVisibility(View.VISIBLE);
-            connectionStatus.bringToFront();
-        });
-    }
-
-    private void hideConnectionStatus() {
-        runOnUiThread(() -> {
-            if (connectionStatus != null) connectionStatus.setVisibility(View.GONE);
-        });
-    }
-
-    private boolean isNetworkOnline() {
+    private void startKitchenService() {
         try {
-            ConnectivityManager manager = connectivityManager != null
-                    ? connectivityManager
-                    : (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (manager == null) return false;
-            Network network = manager.getActiveNetwork();
-            if (network == null) return false;
-            NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
-            return capabilities != null
-                    && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            Intent service = new Intent(this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
         } catch (Exception ignored) {
-            return false;
         }
     }
 
-    private void scheduleKitchenRetry(long delayMs) {
-        webHandler.removeCallbacks(retryKitchenPage);
-        webHandler.postDelayed(retryKitchenPage, Math.max(500L, delayMs));
+    private void loadKitchenFresh() {
+        if (webView == null) return;
+        mainHandler.removeCallbacks(retryKitchen);
+        mainFrameFailed = false;
+        showConnecting("FAI FAI KITCHEN\nLoading...");
+
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Cache-Control", "no-cache, no-store, must-revalidate");
+        headers.put("Pragma", "no-cache");
+        headers.put("Expires", "0");
+
+        webView.loadUrl(
+                KITCHEN_URL + "?android_kitchen=" + System.currentTimeMillis(),
+                headers
+        );
     }
 
-    private void registerNetworkRecovery() {
-        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-        if (connectivityManager == null || networkCallback != null) return;
-
-        networkCallback = new ConnectivityManager.NetworkCallback() {
-            @Override public void onAvailable(Network network) {
-                webHandler.post(() -> {
-                    if (!destroyed && !kitchenPageReady) {
-                        showConnectionStatus("Internet connected. Loading Kitchen...");
-                        scheduleKitchenRetry(250);
-                    }
-                });
-            }
-
-            @Override public void onLost(Network network) {
-                webHandler.post(() -> {
-                    if (!destroyed && !isNetworkOnline()) {
-                        kitchenPageReady = false;
-                        showConnectionStatus("No internet. Reconnecting...");
-                        scheduleKitchenRetry(3000);
-                    }
-                });
-            }
-        };
-
-        try {
-            connectivityManager.registerDefaultNetworkCallback(networkCallback);
-        } catch (Exception ignored) {
-            networkCallback = null;
-        }
+    private void scheduleRetry() {
+        mainHandler.removeCallbacks(retryKitchen);
+        mainHandler.postDelayed(retryKitchen, RETRY_DELAY_MS);
     }
 
-    private void requestRequiredPermissions() {
-        if (Build.VERSION.SDK_INT < 31) {
-            if (Build.VERSION.SDK_INT >= 33
-                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                        PERMISSION_REQUEST
-                );
-            }
+    private void showConnecting(String text) {
+        if (loadingView == null) return;
+        loadingView.setText(text);
+        loadingView.setVisibility(View.VISIBLE);
+        loadingView.bringToFront();
+    }
+
+    private void hideConnecting() {
+        if (loadingView != null) loadingView.setVisibility(View.GONE);
+    }
+
+    /**
+     * Back order:
+     * order/dialog/menu/history -> Kitchen handles it;
+     * real Live/No orders root -> finish KitchenActivity -> native Tap-to-open screen.
+     */
+    private void handleKitchenBack() {
+        if (webView == null) {
+            finish();
             return;
         }
 
-        List<String> missing = new ArrayList<>();
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
-                != PackageManager.PERMISSION_GRANTED) {
-            missing.add(Manifest.permission.BLUETOOTH_CONNECT);
-        }
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
-                != PackageManager.PERMISSION_GRANTED) {
-            missing.add(Manifest.permission.BLUETOOTH_SCAN);
-        }
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            missing.add(Manifest.permission.POST_NOTIFICATIONS);
-        }
+        webView.evaluateJavascript(
+                "(function(){try{return (typeof window.faiFaiKitchenBack==='function') ? !!window.faiFaiKitchenBack() : false;}catch(e){return false;}})()",
+                value -> {
+                    boolean handled = "true".equalsIgnoreCase(String.valueOf(value));
+                    if (!handled) finish();
+                }
+        );
+    }
 
-        if (!missing.isEmpty()) {
-            requestPermissions(missing.toArray(new String[0]), PERMISSION_REQUEST);
-        }
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        handleKitchenBack();
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (event.getRepeatCount() == 0) {
-                backLongPressHandled = false;
-                event.startTracking();
-            }
+            handleKitchenBack();
             return true;
         }
         return super.onKeyDown(keyCode, event);
     }
 
     @Override
-    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            backLongPressHandled = true;
-            showAdminExitDialog();
-            return true;
-        }
-        return super.onKeyLongPress(keyCode, event);
-    }
-
-    @Override
-    public boolean onKeyUp(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (!backLongPressHandled) {
-                // Staff Back always returns to the Fai Fai launcher instead of
-                // exposing Android Home or walking through WebView history.
-                finish();
-            }
-            backLongPressHandled = false;
-            return true;
-        }
-        return super.onKeyUp(keyCode, event);
-    }
-
-    private String currentAdminExitPin() {
-        String saved = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
-                .getString("pin", "");
-        if (saved != null && saved.trim().length() >= 4) {
-            return saved.trim();
-        }
-        // Initial safety fallback matches the current Kitchen PIN. Once the
-        // Kitchen page syncs a PIN, that current PIN is used automatically.
-        return "2468";
-    }
-
-    private void showAdminExitDialog() {
-        if (!KioskManager.isDeviceOwner(this)) {
-            showToast("Kiosk setup is not activated on this device");
-            return;
-        }
-
-        final EditText input = new EditText(this);
-        input.setHint("Admin PIN");
-        input.setSingleLine(true);
-        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Admin unlock")
-                .setMessage("Enter Admin/Kitchen PIN to leave kiosk mode")
-                .setView(input)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Unlock", null)
-                .create();
-
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
-                    String entered = input.getText() == null ? "" : input.getText().toString().trim();
-                    if (!entered.equals(currentAdminExitPin())) {
-                        input.setError("Wrong PIN");
-                        return;
-                    }
-                    dialog.dismiss();
-                    KioskManager.exitForAdmin(KitchenActivity.this);
-                    showToast("Admin mode unlocked. Open Fai Fai Kitchen to lock again.");
-                }));
-        dialog.show();
-    }
-
-    @Override
     protected void onResume() {
         super.onResume();
-        // Keep the NETUM/Kitchen display awake while Fai Fai Kitchen is visible.
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
-                .edit()
-                .putBoolean("app_foreground", true)
-                .apply();
-
-        String savedPin = getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
-                .getString("pin", "");
-        if (savedPin != null && savedPin.trim().length() >= 4) {
-            // If the background service started ringing before the WebView became
-            // visible, silence it now. The web page will ring again only after the
-            // New order card has actually been painted on screen.
-            Intent stopEarlyAlarm = new Intent(this, KitchenOrderService.class);
-            stopEarlyAlarm.setAction(KitchenOrderService.ACTION_STOP_ALARM);
-            startKitchenService(stopEarlyAlarm);
-
-            Intent service = new Intent(this, KitchenOrderService.class);
-            service.setAction(KitchenOrderService.ACTION_START);
-            startKitchenService(service);
-        }
-
-        // Saved Wi-Fi should reconnect automatically after boot. Device Owner
-        // is also allowed to turn Wi-Fi back on if staff switched it off.
-        KioskManager.ensureWifiReady(this);
-
-        // Keep the device inside the Fai Fai launcher/Kitchen experience.
-        KioskManager.enter(this);
-
-        // If the device booted before Wi-Fi was ready, immediately recover the
-        // WebView once connectivity exists instead of leaving a black screen.
-        if (!kitchenPageReady) {
-            scheduleKitchenRetry(isNetworkOnline() ? 150 : 2000);
-        }
-    }
-
-    @Override
-    protected void onPause() {
-        // As soon as the Kitchen app is no longer visible, return to the phone's
-        // normal screen-timeout behavior.
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
-                .edit()
-                .putBoolean("app_foreground", false)
-                .apply();
-        super.onPause();
+        startKitchenService();
     }
 
     @Override
     protected void onDestroy() {
-        destroyed = true;
+        mainHandler.removeCallbacksAndMessages(null);
         syncHandler.removeCallbacks(syncKitchen);
-        webHandler.removeCallbacksAndMessages(null);
-        if (connectivityManager != null && networkCallback != null) {
-            try { connectivityManager.unregisterNetworkCallback(networkCallback); } catch (Exception ignored) { }
-            networkCallback = null;
-        }
-        if (textToSpeech != null) {
-            try { textToSpeech.stop(); } catch (Exception ignored) { }
-            try { textToSpeech.shutdown(); } catch (Exception ignored) { }
-            textToSpeech = null;
-            textToSpeechReady = false;
-        }
         printerExecutor.shutdownNow();
         if (webView != null) {
             webView.removeJavascriptInterface("VitaPrinter");
-            webView.stopLoading();
             webView.destroy();
+            webView = null;
         }
         super.onDestroy();
     }
 
-    private void speakNative(String message, int attempt) {
-        if (destroyed || message == null || message.trim().isEmpty()) return;
-
-        if (textToSpeech != null && textToSpeechReady) {
-            try {
-                textToSpeech.stop();
-                textToSpeech.speak(
-                        message,
-                        TextToSpeech.QUEUE_FLUSH,
-                        null,
-                        "fai_fai_kitchen_" + System.currentTimeMillis()
-                );
-                return;
-            } catch (Exception ignored) { }
-        }
-
-        // TTS initialization can take a moment after boot/app launch. Retry
-        // briefly so the first late/ready announcement is not lost.
-        if (attempt < 4) {
-            webHandler.postDelayed(() -> speakNative(message, attempt + 1), 500L);
-        }
-    }
-
     private void showToast(String message) {
         runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
-    }
-
-    private void startKitchenService(Intent service) {
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(service);
-        } else {
-            startService(service);
-        }
     }
 
     public final class PrinterBridge {
@@ -535,30 +266,27 @@ public class KitchenActivity extends Activity {
             String json = rawJson == null ? "" : rawJson;
             if (json.startsWith("\"") && json.endsWith("\"")) {
                 json = json.substring(1, json.length() - 1)
-                        .replace("\\\"", "\"")
-                        .replace("\\\\", "\\");
+                        .replace("\\\"", "\"").replace("\\\\", "\\");
             }
-
             try {
-                org.json.JSONObject data = new org.json.JSONObject(json);
+                JSONObject data = new JSONObject(json);
                 String pin = data.optString("pin", "").trim();
                 boolean sound = data.optBoolean("sound", true);
-
-                getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE)
-                        .edit()
+                getSharedPreferences("fai_fai_kitchen", MODE_PRIVATE).edit()
                         .putString("pin", pin)
                         .putBoolean("sound", sound)
                         .apply();
+                if (pin.length() >= 4) startKitchenService();
+            } catch (Exception ignored) {
+            }
+        }
 
-                if (pin.length() >= 4) {
-                    Intent service = new Intent(
-                            KitchenActivity.this,
-                            KitchenOrderService.class
-                    );
-                    service.setAction(KitchenOrderService.ACTION_START);
-                    startKitchenService(service);
-                }
-            } catch (Exception ignored) { }
+        @JavascriptInterface
+        public void stopOrderAlarm() {
+            Intent service = new Intent(KitchenActivity.this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
         }
 
         @JavascriptInterface
@@ -566,42 +294,8 @@ public class KitchenActivity extends Activity {
             Intent service = new Intent(KitchenActivity.this, KitchenOrderService.class);
             service.setAction(KitchenOrderService.ACTION_RING_NOW);
             service.putExtra(KitchenOrderService.EXTRA_ORDER_COUNT, Math.max(1, count));
-            startKitchenService(service);
-        }
-
-        @JavascriptInterface
-        public void stopOrderAlarm() {
-            Intent service = new Intent(KitchenActivity.this, KitchenOrderService.class);
-            service.setAction(KitchenOrderService.ACTION_STOP_ALARM);
-            startKitchenService(service);
-        }
-
-        @JavascriptInterface
-        public void speakText(String text) {
-            final String message = text == null ? "" : text.trim();
-            if (message.isEmpty()) return;
-
-            runOnUiThread(() -> speakNative(message, 0));
-        }
-
-        @JavascriptInterface
-        public String getBatteryInfo() {
-            try {
-                Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-                if (battery == null) return "{\"level\":-1,\"charging\":false}";
-
-                int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-                int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-                boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
-                        || status == BatteryManager.BATTERY_STATUS_FULL;
-                int percent = (level >= 0 && scale > 0)
-                        ? Math.max(0, Math.min(100, Math.round(level * 100f / scale)))
-                        : -1;
-                return "{\"level\":" + percent + ",\"charging\":" + charging + "}";
-            } catch (Exception ignored) {
-                return "{\"level\":-1,\"charging\":false}";
-            }
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
         }
 
         @JavascriptInterface
@@ -610,8 +304,28 @@ public class KitchenActivity extends Activity {
         }
 
         @JavascriptInterface
-        public String printerStatus(String payloadJson) {
-            return PrinterRouter.status(KitchenActivity.this, payloadJson == null ? "{}" : payloadJson);
+        public boolean handlesLateAlerts() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public String getBatteryInfo() {
+            try {
+                Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                if (battery == null) return "{}";
+                int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                int percent = scale > 0 ? Math.round(level * 100f / scale) : level;
+                boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                        || status == BatteryManager.BATTERY_STATUS_FULL;
+                JSONObject result = new JSONObject();
+                result.put("level", percent);
+                result.put("charging", charging);
+                return result.toString();
+            } catch (Exception ignored) {
+                return "{}";
+            }
         }
 
         @JavascriptInterface
@@ -622,9 +336,8 @@ public class KitchenActivity extends Activity {
 
             printerExecutor.execute(() -> {
                 try {
-                    // Print successfully but stay silent on the Kitchen device.
-                    // Staff only need a popup when printing fails.
-                    PrinterRouter.print(KitchenActivity.this, payloadJson);
+                    NetworkReceiptPrinter.print(KitchenActivity.this, payloadJson);
+                    showToast("Receipt printed");
                 } catch (Exception error) {
                     String message = error.getMessage();
                     if (message == null || message.trim().isEmpty()) {
