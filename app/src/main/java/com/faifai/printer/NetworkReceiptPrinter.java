@@ -89,6 +89,11 @@ final class NetworkReceiptPrinter {
         return render(context, receipt);
     }
 
+    /** Compatibility entry point used by the Q2I iPos built-in printer bridge. */
+    static byte[] renderForBuiltIn(Context context, String payloadJson) throws Exception {
+        return renderReceipt(context, payloadJson, true, false);
+    }
+
     /**
      * Raster receipt for the NETUM 58mm printer. Rendering text as a bitmap gives
      * the kitchen copy a much clearer, larger delivery-platform style than the
@@ -121,7 +126,7 @@ final class NetworkReceiptPrinter {
         paint.setColor(Color.BLACK);
         paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
 
-        // Keep the existing large/clear receipt layout, but never print a logo.
+        // Same large/clear receipt layout; logo intentionally disabled.
         int y = 16;
 
         y = bitmapCentered(canvas, paint, receipt.restaurantName, y, 32, true, width, margin);
@@ -330,13 +335,15 @@ final class NetworkReceiptPrinter {
         boolean is58mm = true;
         int width = 32;
         int paperDots = 384;
+
         command(out, 0x1B, 0x40); // ESC @ - initialize printer
         command(out, 0x1B, 0x4D, 0x00); // Font A
         command(out, 0x1B, 0x33, 36); // taller/open spacing like delivery-platform receipts
         doubleStrike(out, true); // darker, easier-to-read print
         align(out, 1);
 
-        // No logo in the fallback path either.
+        // Logo intentionally disabled in the ESC/POS fallback too.
+
         bold(out, true);
         textScale(out, SCALE_BIG);
         line(out, receipt.restaurantName);
@@ -1066,7 +1073,6 @@ final class NetworkReceiptPrinter {
                 result.restaurantName = "Fai Fai Juice";
             }
 
-            // Receipt logo is intentionally disabled for this kitchen printer.
             result.showLogo = false;
 
             result.logoUrl = first(branding, "logoUrl", "logo_url");
