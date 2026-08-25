@@ -60,12 +60,12 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$APK"
 
       - name: Name APK
-        run: cp app/build/outputs/apk/release/app-release.apk Fai-Fai-Printer-v1027-SIGNED.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Fai-Fai-Printer-v1029-SIGNED.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: Fai-Fai-Kitchen-Signed-APK-v1027
-          path: Fai-Fai-Printer-v1027-SIGNED.apk
+          name: Fai-Fai-Kitchen-Signed-APK-v1029
+          path: Fai-Fai-Printer-v1029-SIGNED.apk
           if-no-files-found: error
           retention-days: 30
