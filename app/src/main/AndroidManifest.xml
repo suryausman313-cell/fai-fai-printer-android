@@ -3,47 +3,49 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Backup ESC/POS route only; Q2I built-in iPos is primary. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+
+    <!-- Android 11+ package visibility for the Q2I printer service and OEM HOME launcher. -->
     <queries>
         <package android:name="com.iposprinter.iposprinterservice" />
-        <package android:name="com.android.launcher3" />
         <intent>
             <action android:name="com.iposprinter.iposprinterservice.IPosPrintService" />
         </intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LAUNCHER" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.HOME" />
-        </intent>
-        <intent>
-            <action android:name="android.settings.SETTINGS" />
         </intent>
     </queries>
 
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.FaiFaiPrinter"
         android:usesCleartextTraffic="true">
 
-        <!-- Dedicated device home / Tap-to-open screen -->
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
             android:exported="true"
             android:launchMode="singleTask"
+            android:lockTaskMode="if_whitelisted"
             android:screenOrientation="fullSensor">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -56,20 +58,24 @@
             </intent-filter>
         </activity>
 
-        <!-- Live Kitchen WebView / built-in printer bridge -->
         <activity
             android:name=".KitchenActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
             android:exported="false"
             android:launchMode="singleTop"
+            android:lockTaskMode="if_whitelisted"
             android:screenOrientation="fullSensor" />
 
         <service
             android:name=".KitchenOrderService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Kitchen order monitoring, urgent order alarms, and printer availability for an attended food-service terminal" />
+        </service>
 
-        <!-- Exact receiver component already used when this tablet was provisioned as Device Owner. -->
         <receiver
             android:name=".KioskDeviceAdminReceiver"
             android:description="@string/app_name"
@@ -86,15 +92,12 @@
 
         <receiver
             android:name=".BootReceiver"
-            android:directBootAware="true"
             android:enabled="true"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
-
     </application>
+
 </manifest>
