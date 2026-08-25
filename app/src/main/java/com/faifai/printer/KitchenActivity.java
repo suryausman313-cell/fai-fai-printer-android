@@ -132,15 +132,15 @@ public class KitchenActivity extends Activity {
         // slightly more compact without changing the public web app on other devices.
         float widthDp = getResources().getDisplayMetrics().widthPixels
                 / getResources().getDisplayMetrics().density;
-        // Keep the Q2I Kitchen at true 100% scale. Older builds forced 75%
-        // on the POS screen, which made the UI noticeably smaller than Talabat.
-        settings.setTextZoom(100);
+        // Keep the Q2I Kitchen only slightly compact. This changes the device
+        // WebView UI only; receipt bitmap/font sizes are completely unaffected.
+        settings.setTextZoom(95);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
 
         settings.setUserAgentString(
-                settings.getUserAgentString() + " FaiFaiKitchen/1.21.0"
+                settings.getUserAgentString() + " FaiFaiKitchen/1.21.9"
         );
 
         webView.setWebViewClient(new WebViewClient() {

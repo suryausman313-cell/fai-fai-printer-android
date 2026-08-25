@@ -214,9 +214,13 @@ final class NetworkReceiptPrinter {
                 if (item == null) continue;
                 menuItemDiscounts += Math.max(0, number(item, "item_discount_amount", "itemDiscountAmount", "discount", "discount_amount", "item_discount"));
             }
-            double shownSubtotal = receipt.subtotalAmount > 0 ? receipt.subtotalAmount + menuItemDiscounts : 0;
+            double shownSubtotal = receipt.subtotalAmount > 0
+                    ? receipt.subtotalAmount + menuItemDiscounts
+                    : calculateGrossItemsSubtotal(receipt);
             y = bitmapPair(canvas, paint, "Subtotal", money(shownSubtotal), y + 19, 25, false, width, margin);
-            y = bitmapPair(canvas, paint, "Delivery Fee", money(receipt.deliveryCharge), y + 6, 25, false, width, margin);
+            if (isDeliveryReceipt(receipt)) {
+                y = bitmapPair(canvas, paint, "Delivery Fee", money(receipt.deliveryCharge), y + 6, 25, false, width, margin);
+            }
             y = bitmapPair(canvas, paint, "Service Fee", money(receipt.serviceFee), y + 6, 25, false, width, margin);
             if (receipt.smallOrderFee > 0) y = bitmapPair(canvas, paint, "Small Order Fee", money(receipt.smallOrderFee), y + 6, 25, false, width, margin);
             y = bitmapPair(canvas, paint, "Item Discounts", menuItemDiscounts > 0 ? "-" + money(menuItemDiscounts) : money(0), y + 6, 25, false, width, margin);
@@ -312,20 +316,70 @@ final class NetworkReceiptPrinter {
     }
 
     private static int bitmapItemWithPrice(Canvas c, Paint p, String itemText, String price, int y, int width, int margin) {
-        int priceArea = price == null || price.isEmpty() ? 0 : 105;
-        int textWidth = width - margin * 2 - priceArea;
-        List<String> lines = bitmapWrap(p, itemText, textWidth, 32, true);
-        bitmapPaint(p, 33, true, Paint.Align.LEFT);
-        int startY = y;
-        for (String line : lines) {
-            c.drawText(line, margin, y + 33, p);
-            y += 36;
+        final int itemSize = 33;
+        final int priceSize = 29;
+        final int gap = 16;
+        final int available = width - margin * 2;
+        final String safeItem = itemText == null ? "" : itemText.trim();
+        final String safePrice = price == null ? "" : price.trim();
+
+        bitmapPaint(p, itemSize, true, Paint.Align.LEFT);
+        float itemSingleWidth = p.measureText(safeItem);
+        bitmapPaint(p, priceSize, true, Paint.Align.RIGHT);
+        float priceWidth = safePrice.isEmpty() ? 0f : p.measureText(safePrice);
+
+        // If both fit with a real gap, print Talabat-style on the same row.
+        if (safePrice.isEmpty() || itemSingleWidth + priceWidth + gap <= available) {
+            bitmapPaint(p, itemSize, true, Paint.Align.LEFT);
+            c.drawText(safeItem, margin, y + itemSize, p);
+            if (!safePrice.isEmpty()) {
+                bitmapPaint(p, priceSize, true, Paint.Align.RIGHT);
+                c.drawText(safePrice, width - margin, y + priceSize, p);
+            }
+            return y + itemSize + 7;
         }
-        if (price != null && !price.isEmpty()) {
-            bitmapPaint(p, 29, true, Paint.Align.RIGHT);
-            c.drawText(price, width - margin, startY + 29, p);
+
+        // Long item: use the full paper width for the item and move price to its
+        // own right-aligned line. This guarantees item/price never touch.
+        List<String> lines = bitmapWrap(p, safeItem, available, itemSize, true);
+        bitmapPaint(p, itemSize, true, Paint.Align.LEFT);
+        for (String line : lines) {
+            c.drawText(line, margin, y + itemSize, p);
+            y += itemSize + 7;
+        }
+        if (!safePrice.isEmpty()) {
+            bitmapPaint(p, priceSize, true, Paint.Align.RIGHT);
+            c.drawText(safePrice, width - margin, y + priceSize, p);
+            y += priceSize + 7;
         }
         return y;
+    }
+
+    private static boolean isDeliveryReceipt(Receipt receipt) {
+        if (receipt == null) return false;
+        String type = String.valueOf(receipt.orderType == null ? "" : receipt.orderType).trim().toLowerCase(Locale.US);
+        if ("delivery".equals(type)) return true;
+        if ("pickup".equals(type)) return false;
+        String payment = String.valueOf(receipt.paymentMethod == null ? "" : receipt.paymentMethod).toLowerCase(Locale.US);
+        return payment.contains("delivery");
+    }
+
+    private static double calculateGrossItemsSubtotal(Receipt receipt) {
+        if (receipt == null || receipt.items == null) return 0;
+        double total = 0;
+        for (int i = 0; i < receipt.items.length(); i++) {
+            JSONObject item = receipt.items.optJSONObject(i);
+            if (item == null) continue;
+            int qty = Math.max(1, integer(item, 1, "quantity", "qty"));
+            double linePrice = number(item, "total_price", "line_total", "totalPrice");
+            double unitPrice = number(item, "price", "unit_price");
+            if (linePrice <= 0 && unitPrice > 0) linePrice = unitPrice * qty;
+            double itemDiscount = Math.max(0, number(item, "item_discount_amount", "itemDiscountAmount", "discount", "discount_amount", "item_discount"));
+            double originalPrice = number(item, "original_price", "originalPrice", "original_total_price");
+            if (originalPrice <= 0) originalPrice = linePrice + itemDiscount;
+            total += Math.max(0, originalPrice > 0 ? originalPrice : linePrice);
+        }
+        return total;
     }
 
     private static byte[] renderLegacy(Context context, Receipt receipt) throws Exception {
@@ -428,9 +482,11 @@ final class NetworkReceiptPrinter {
                 if (item == null) continue;
                 menuItemDiscounts += Math.max(0, number(item, "item_discount_amount", "itemDiscountAmount", "discount", "discount_amount", "item_discount"));
             }
-            double shownSubtotal = receipt.subtotalAmount > 0 ? receipt.subtotalAmount + menuItemDiscounts : 0;
+            double shownSubtotal = receipt.subtotalAmount > 0
+                    ? receipt.subtotalAmount + menuItemDiscounts
+                    : calculateGrossItemsSubtotal(receipt);
             pair(out, "Subtotal", money(shownSubtotal), width);
-            pair(out, "Delivery Fee", money(receipt.deliveryCharge), width);
+            if (isDeliveryReceipt(receipt)) pair(out, "Delivery Fee", money(receipt.deliveryCharge), width);
             pair(out, "Service Fee", money(receipt.serviceFee), width);
             if (receipt.smallOrderFee > 0) pair(out, "Small Order Fee", money(receipt.smallOrderFee), width);
             pair(out, "Item Discounts", menuItemDiscounts > 0 ? "-" + money(menuItemDiscounts) : money(0), width);
