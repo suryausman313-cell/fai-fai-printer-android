@@ -345,7 +345,6 @@ public class KitchenActivity extends Activity {
                 try {
                     if (builtInPrinter == null) throw new IllegalStateException("Built-in printer unavailable");
                     builtInPrinter.printReceipt(payloadJson);
-                    showToast("Receipt printed on device");
                 } catch (Exception error) {
                     String message = error.getMessage();
                     if (message == null || message.trim().isEmpty()) {

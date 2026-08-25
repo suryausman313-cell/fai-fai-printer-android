@@ -2,7 +2,7 @@ package com.faifai.printer;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.KeyguardManager;
+import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Context;
@@ -14,20 +14,32 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+/**
+ * Dedicated Fai Fai device home.
+ *
+ * Visible UI intentionally contains only OPEN KITCHEN.
+ * A long-press on OPEN KITCHEN is the hidden owner/admin escape: it asks for
+ * the Kitchen PIN already synced by KitchenActivity, then opens the Q2I's
+ * normal Android launcher so the owner can reach other device apps.
+ */
 public class MainActivity extends Activity {
+    private static final String PREFS = "fai_fai_kitchen";
+    private static final String PREF_PIN = "pin";
+    private static final String DEVICE_LAUNCHER_PACKAGE = "com.android.launcher3";
 
-    private static final int REQUEST_DEVICE_ADMIN_ACCESS = 713;
-    private boolean adminPromptOpen = false;
+    private boolean adminDialogOpen = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,7 +60,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        adminPromptOpen = false;
+        adminDialogOpen = false;
         configureDedicatedDeviceMode();
         startKitchenService();
     }
@@ -65,7 +77,6 @@ public class MainActivity extends Activity {
                 IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
                 homeFilter.addCategory(Intent.CATEGORY_HOME);
                 homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
-
                 dpm.addPersistentPreferredActivity(
                         admin,
                         homeFilter,
@@ -80,6 +91,7 @@ public class MainActivity extends Activity {
                 }
             }
         } catch (Exception ignored) {
+            // The Kitchen still works even if owner/kiosk APIs are unavailable.
         }
     }
 
@@ -89,7 +101,6 @@ public class MainActivity extends Activity {
         root.setGravity(Gravity.CENTER);
         root.setPadding(dp(28), dp(28), dp(28), dp(28));
         root.setBackgroundColor(Color.rgb(2, 8, 23));
-
         root.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -97,9 +108,7 @@ public class MainActivity extends Activity {
 
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.drawable.ic_launcher);
-
-        LinearLayout.LayoutParams iconParams =
-                new LinearLayout.LayoutParams(dp(96), dp(96));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(96), dp(96));
         iconParams.bottomMargin = dp(20);
         icon.setLayoutParams(iconParams);
         root.addView(icon);
@@ -113,204 +122,124 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView status = new TextView(this);
-        status.setText(
-                "Kitchen device ready\nNew orders stay active in background"
-        );
+        status.setText("Kitchen device ready\nNew orders stay active in background");
         status.setTextColor(Color.rgb(148, 163, 184));
         status.setTextSize(15f);
         status.setGravity(Gravity.CENTER);
-
-        LinearLayout.LayoutParams statusParams =
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                );
-
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
         statusParams.topMargin = dp(10);
         statusParams.bottomMargin = dp(30);
         status.setLayoutParams(statusParams);
         root.addView(status);
 
-        Button openKitchen =
-                makeActionButton(
-                        "OPEN KITCHEN",
-                        Color.rgb(234, 88, 12)
-                );
-
+        Button openKitchen = makeActionButton("OPEN KITCHEN", Color.rgb(234, 88, 12));
         openKitchen.setOnClickListener(v -> openKitchen());
+        openKitchen.setOnLongClickListener(v -> {
+            showHiddenAdminPinDialog();
+            return true;
+        });
         root.addView(openKitchen);
-
-        TextView hint = new TextView(this);
-        hint.setText("Hold Back for device admin access");
-        hint.setTextColor(Color.rgb(71, 85, 105));
-        hint.setTextSize(10f);
-        hint.setGravity(Gravity.CENTER);
-
-        LinearLayout.LayoutParams hintParams =
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                );
-
-        hintParams.topMargin = dp(18);
-        hint.setLayoutParams(hintParams);
-        root.addView(hint);
 
         return root;
     }
 
-    private Button makeActionButton(
-            String label,
-            int backgroundColor
-    ) {
+    private Button makeActionButton(String label, int backgroundColor) {
         Button button = new Button(this);
-
         button.setText(label);
         button.setTextColor(Color.WHITE);
         button.setTextSize(17f);
         button.setTypeface(Typeface.DEFAULT_BOLD);
         button.setAllCaps(false);
-        button.setPadding(
-                dp(22),
-                dp(16),
-                dp(22),
-                dp(16)
+        button.setPadding(dp(22), dp(16), dp(22), dp(16));
+
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(backgroundColor);
+        background.setCornerRadius(dp(16));
+        button.setBackground(background);
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
         );
-
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(backgroundColor);
-        bg.setCornerRadius(dp(16));
-        button.setBackground(bg);
-
-        LinearLayout.LayoutParams params =
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                );
-
         params.leftMargin = dp(14);
         params.rightMargin = dp(14);
         button.setLayoutParams(params);
-
         return button;
     }
 
     private void openKitchen() {
-        Intent intent =
-                new Intent(this, KitchenActivity.class);
-
-        intent.addFlags(
-                Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        | Intent.FLAG_ACTIVITY_SINGLE_TOP
-        );
-
+        Intent intent = new Intent(this, KitchenActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(intent);
     }
 
-    private void startKitchenService() {
-        try {
-            Intent service =
-                    new Intent(this, KitchenOrderService.class);
+    private void showHiddenAdminPinDialog() {
+        if (adminDialogOpen) return;
 
-            service.setAction(
-                    KitchenOrderService.ACTION_START
-            );
+        String savedPin = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(PREF_PIN, "");
+        savedPin = savedPin == null ? "" : savedPin.trim();
 
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(service);
-            } else {
-                startService(service);
-            }
-
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void requestDeviceAdminAccess() {
-        if (adminPromptOpen) return;
-
-        adminPromptOpen = true;
-
-        try {
-            KeyguardManager keyguard =
-                    (KeyguardManager)
-                            getSystemService(
-                                    Context.KEYGUARD_SERVICE
-                            );
-
-            if (keyguard == null
-                    || !keyguard.isDeviceSecure()) {
-
-                adminPromptOpen = false;
-
-                Toast.makeText(
-                        this,
-                        "Device PIN/password is not configured",
-                        Toast.LENGTH_LONG
-                ).show();
-
-                return;
-            }
-
-            Intent confirm =
-                    keyguard.createConfirmDeviceCredentialIntent(
-                            "Device Admin Access",
-                            "Enter the device PIN/password to view other apps"
-                    );
-
-            if (confirm == null) {
-                adminPromptOpen = false;
-
-                Toast.makeText(
-                        this,
-                        "Admin password screen is unavailable",
-                        Toast.LENGTH_LONG
-                ).show();
-
-                return;
-            }
-
-            startActivityForResult(
-                    confirm,
-                    REQUEST_DEVICE_ADMIN_ACCESS
-            );
-
-        } catch (Exception error) {
-            adminPromptOpen = false;
-
+        if (savedPin.length() < 4) {
             Toast.makeText(
                     this,
-                    "Could not open admin password",
+                    "Open Kitchen and login once first",
                     Toast.LENGTH_LONG
             ).show();
-        }
-    }
-
-    @Override
-    protected void onActivityResult(
-            int requestCode,
-            int resultCode,
-            Intent data
-    ) {
-        super.onActivityResult(
-                requestCode,
-                resultCode,
-                data
-        );
-
-        if (requestCode
-                != REQUEST_DEVICE_ADMIN_ACCESS) {
             return;
         }
 
-        adminPromptOpen = false;
+        final String expectedPin = savedPin;
+        adminDialogOpen = true;
 
-        if (resultCode == RESULT_OK) {
-            openDeviceLauncherForAdmin();
-        }
+        EditText input = new EditText(this);
+        input.setHint("PIN");
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        input.setPadding(dp(18), dp(10), dp(18), dp(10));
+
+        LinearLayout box = new LinearLayout(this);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+        box.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Admin Access")
+                .setView(box)
+                .setNegativeButton("Cancel", (d, which) -> adminDialogOpen = false)
+                .setPositiveButton("Open", null)
+                .create();
+
+        dialog.setOnCancelListener(d -> adminDialogOpen = false);
+        dialog.setOnDismissListener(d -> adminDialogOpen = false);
+        dialog.setOnShowListener(d -> {
+            input.requestFocus();
+            dialog.getWindow().setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+            );
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String entered = input.getText() == null
+                        ? ""
+                        : input.getText().toString().trim();
+                if (!expectedPin.equals(entered)) {
+                    input.setError("Wrong PIN");
+                    return;
+                }
+
+                dialog.dismiss();
+                openDeviceLauncher();
+            });
+        });
+
+        dialog.show();
     }
 
-    private void openDeviceLauncherForAdmin() {
+    private void openDeviceLauncher() {
         try {
             try {
                 stopLockTask();
@@ -318,149 +247,74 @@ public class MainActivity extends Activity {
             }
 
             DevicePolicyManager dpm =
-                    (DevicePolicyManager)
-                            getSystemService(
-                                    Context.DEVICE_POLICY_SERVICE
-                            );
+                    (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
+            ComponentName admin = new ComponentName(this, KioskDeviceAdminReceiver.class);
 
-            ComponentName admin =
-                    new ComponentName(
-                            this,
-                            KioskDeviceAdminReceiver.class
-                    );
-
-            if (dpm != null
-                    && dpm.isDeviceOwnerApp(
-                            getPackageName()
-                    )) {
-
+            if (dpm != null && dpm.isDeviceOwnerApp(getPackageName())) {
                 try {
-                    dpm.clearPackagePersistentPreferredActivities(
-                            admin,
-                            getPackageName()
-                    );
+                    dpm.clearPackagePersistentPreferredActivities(admin, getPackageName());
                 } catch (Exception ignored) {
                 }
             }
 
-            Intent launcher =
-                    new Intent(Intent.ACTION_MAIN);
-
-            launcher.addCategory(
-                    Intent.CATEGORY_HOME
-            );
-
-            launcher.setPackage(
-                    "com.android.launcher3"
-            );
-
+            Intent launcher = new Intent(Intent.ACTION_MAIN);
+            launcher.addCategory(Intent.CATEGORY_HOME);
+            launcher.setPackage(DEVICE_LAUNCHER_PACKAGE);
             launcher.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK
                             | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             );
 
-            if (launcher.resolveActivity(
-                    getPackageManager()
-            ) != null) {
-
+            if (launcher.resolveActivity(getPackageManager()) != null) {
                 startActivity(launcher);
-
-            } else {
-
-                Intent fallback =
-                        new Intent(Intent.ACTION_MAIN);
-
-                fallback.addCategory(
-                        Intent.CATEGORY_HOME
-                );
-
-                fallback.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK
-                                | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                );
-
-                startActivity(fallback);
+                return;
             }
 
-        } catch (Exception error) {
+            Intent fallback = getPackageManager().getLaunchIntentForPackage(DEVICE_LAUNCHER_PACKAGE);
+            if (fallback != null) {
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(fallback);
+                return;
+            }
 
-            Toast.makeText(
-                    this,
-                    "Could not open device apps",
-                    Toast.LENGTH_LONG
-            ).show();
+            Toast.makeText(this, "Device launcher not found", Toast.LENGTH_LONG).show();
+        } catch (Exception error) {
+            Toast.makeText(this, "Could not open device apps", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void startKitchenService() {
+        try {
+            Intent service = new Intent(this, KitchenOrderService.class);
+            service.setAction(KitchenOrderService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(service);
+            } else {
+                startService(service);
+            }
+        } catch (Exception ignored) {
         }
     }
 
     private int dp(int value) {
-        return Math.round(
-                value
-                        * getResources()
-                        .getDisplayMetrics()
-                        .density
-        );
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     @Override
-    public boolean onKeyDown(
-            int keyCode,
-            KeyEvent event
-    ) {
-
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-
-            if (event != null
-                    && event.getRepeatCount() >= 2) {
-
-                requestDeviceAdminAccess();
-            }
-
-            return true;
-        }
-
-        return super.onKeyDown(
-                keyCode,
-                event
-        );
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) return true;
+        return super.onKeyDown(keyCode, event);
     }
 
     @Override
-    public boolean onKeyLongPress(
-            int keyCode,
-            KeyEvent event
-    ) {
-
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-
-            requestDeviceAdminAccess();
-            return true;
-        }
-
-        return super.onKeyLongPress(
-                keyCode,
-                event
-        );
-    }
-
-    @Override
-    public boolean onKeyUp(
-            int keyCode,
-            KeyEvent event
-    ) {
-
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            return true;
-        }
-
-        return super.onKeyUp(
-                keyCode,
-                event
-        );
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) return true;
+        return super.onKeyUp(keyCode, event);
     }
 
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
-        // Short Back stays on Kitchen home.
+        // Keep short Back inside the dedicated Fai Fai home.
     }
 }

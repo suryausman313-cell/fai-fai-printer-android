@@ -10,26 +10,15 @@ import android.os.IInterface;
 import android.os.Parcel;
 import android.os.RemoteException;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Built-in 58mm printer driver for the Newpas/Newpos Q2I.
+ * Built-in printer bridge for the Newpas Q2I.
  *
- * The device exposes the vendor iPos printer service:
- *   package: com.iposprinter.iposprinterservice
- *   action : com.iposprinter.iposprinterservice.IPosPrintService
- *
- * We talk to the Binder directly so this project does not need vendor JAR/AAR or
- * AIDL build configuration. Transaction numbers follow the vendor IPosPrinterService
- * AIDL used by Q-series terminals.
+ * Important: receipt DESIGN is not created here. NetworkReceiptPrinter renders
+ * the same ESC/POS bytes as the old receipt, then this class sends those exact
+ * bytes to the Q2I iPos built-in printer service.
  */
 final class IposBuiltInPrinter {
     private static final String SERVICE_PACKAGE = "com.iposprinter.iposprinterservice";
@@ -37,10 +26,11 @@ final class IposBuiltInPrinter {
     private static final String SERVICE_DESCRIPTOR = "com.iposprinter.iposprinterservice.IPosPrinterService";
     private static final String CALLBACK_DESCRIPTOR = "com.iposprinter.iposprinterservice.IPosPrinterCallback";
 
-    // Vendor AIDL transaction positions.
+    // IPosPrinterService AIDL transaction order.
     private static final int TX_GET_STATUS = 1;
     private static final int TX_PRINTER_INIT = 2;
-    private static final int TX_PRINT_SPEC_FORMAT_TEXT = 11;
+    private static final int TX_PRINT_RAW_DATA = 16; // vendor raw-byte API (kept documented; not used for ESC/POS receipt)
+    private static final int TX_SEND_USER_CMD_DATA = 17; // vendor ESC/POS command API
     private static final int TX_PERFORM_PRINT = 18;
 
     private final Context appContext;
@@ -48,11 +38,10 @@ final class IposBuiltInPrinter {
     private volatile IBinder service;
     private volatile boolean binding;
     private CountDownLatch bindLatch = new CountDownLatch(1);
-
     private final CallbackBinder callback = new CallbackBinder();
 
     IposBuiltInPrinter(Context context) {
-        this.appContext = context.getApplicationContext();
+        appContext = context.getApplicationContext();
     }
 
     void bind() {
@@ -72,7 +61,7 @@ final class IposBuiltInPrinter {
                     bindLatch.countDown();
                 }
             }
-        } catch (Exception error) {
+        } catch (Exception ignored) {
             synchronized (lock) {
                 binding = false;
                 bindLatch.countDown();
@@ -90,119 +79,35 @@ final class IposBuiltInPrinter {
     }
 
     void printReceipt(String payloadJson) throws Exception {
+        if (payloadJson == null || payloadJson.trim().isEmpty()) {
+            throw new IllegalArgumentException("Receipt data is empty");
+        }
+
         ensureConnected();
-
-        JSONObject root = new JSONObject(payloadJson);
-        JSONObject order = root.optJSONObject("order");
-        if (order == null) throw new IllegalArgumentException("Order data missing");
-        JSONObject settings = root.optJSONObject("settings");
-        if (settings == null) settings = new JSONObject();
-
         waitUntilReady();
+
+        // Reuse the OLD receipt renderer exactly; only the transport changes
+        // from network socket to the Q2I's built-in iPos printer.
+        byte[] receiptBytes = NetworkReceiptPrinter.renderForBuiltIn(appContext, payloadJson);
+        if (receiptBytes == null || receiptBytes.length == 0) {
+            throw new IllegalStateException("Receipt data is empty");
+        }
+
         transactVoid(TX_PRINTER_INIT, data -> data.writeStrongBinder(callback));
 
-        String restaurantName = clean(settings.optString("restaurant_name", "Fai Fai Juice"));
-        String orderId = clean(String.valueOf(order.opt("id")));
-        String orderType = clean(order.optString("order_type", "pickup")).toUpperCase(Locale.US);
-        String payment = clean(order.optString("payment_method", ""));
-        String customer = clean(order.optString("customer_name", ""));
-        String phone = clean(order.optString("customer_phone", ""));
-        String createdAt = clean(order.optString("created_at", ""));
-        String notes = clean(firstNonEmpty(
-                order.optString("customer_notes", ""),
-                order.optString("order_notes", "")
-        ));
-
-        printText(restaurantName + "\n", 32, 1);
-        printText("ORDER #" + orderId + "\n", 32, 1);
-        printText(repeat('-', 32) + "\n", 24, 0);
-        printText("Type: " + orderType + "\n", 24, 0);
-        String time = formatUaeTime(createdAt);
-        if (!time.isEmpty()) printText("Time: " + time + "\n", 24, 0);
-        if (!customer.isEmpty()) printText("Customer: " + customer + "\n", 24, 0);
-        if (!phone.isEmpty()) printText("Phone: " + phone + "\n", 24, 0);
-        if (!payment.isEmpty()) printText("Payment: " + payment + "\n", 24, 0);
-        printText(repeat('-', 32) + "\n", 24, 0);
-
-        JSONArray items = order.optJSONArray("items");
-        if (items == null) {
-            String rawItems = order.optString("items_json", "");
-            if (rawItems.trim().startsWith("[")) {
-                try { items = new JSONArray(rawItems); } catch (Exception ignored) { }
-            }
-        }
-        if (items == null) items = new JSONArray();
-
-        for (int i = 0; i < items.length(); i++) {
-            JSONObject item = items.optJSONObject(i);
-            if (item == null) continue;
-            int qty = Math.max(1, item.optInt("quantity", 1));
-            String name = clean(firstNonEmpty(item.optString("name", ""), "Item"));
-            String size = clean(firstNonEmpty(item.optString("size", ""), item.optString("selectedSize", "")));
-            String line = qty + " x " + name + (size.isEmpty() ? "" : " (" + size + ")");
-            printWrapped(line, 24);
-
-            JSONArray extras = item.optJSONArray("extras");
-            if (extras != null) {
-                for (int x = 0; x < extras.length(); x++) {
-                    Object extraValue = extras.opt(x);
-                    String extra;
-                    if (extraValue instanceof JSONObject) {
-                        extra = clean(((JSONObject) extraValue).optString("name", ""));
-                    } else {
-                        extra = clean(String.valueOf(extraValue));
-                    }
-                    if (!extra.isEmpty()) printWrapped("  + " + extra, 24);
-                }
-            }
-        }
-
-        if (!notes.isEmpty()) {
-            printText(repeat('-', 32) + "\n", 24, 0);
-            printText("NOTES\n", 24, 0);
-            printWrapped(notes, 24);
-        }
-
-        double total = order.optDouble("total_amount", Double.NaN);
-        if (!Double.isNaN(total)) {
-            printText(repeat('-', 32) + "\n", 24, 0);
-            printText(String.format(Locale.US, "TOTAL: AED %.2f\n", total), 32, 1);
-        }
-
-        boolean reprint = root.optBoolean("reprint", false);
-        if (reprint) printText("REPRINT / COPY\n", 24, 1);
-
-        printText("\n", 24, 0);
-        transactVoid(TX_PERFORM_PRINT, data -> {
-            data.writeInt(160);
+        // The V1.7 renderer produces a complete ESC/POS byte stream (font size,
+        // bold, alignment, spacing and raster logo commands included). The Q2I
+        // vendor AIDL exposes transaction 17 specifically for ESC/POS commands,
+        // so send the whole old receipt through that path to preserve its layout.
+        transactVoid(TX_SEND_USER_CMD_DATA, data -> {
+            data.writeByteArray(receiptBytes);
             data.writeStrongBinder(callback);
         });
-    }
 
-    private void printWrapped(String text, int fontSize) throws Exception {
-        String safe = clean(text);
-        if (safe.isEmpty()) return;
-        final int width = fontSize >= 32 ? 22 : 32;
-        int pos = 0;
-        while (pos < safe.length()) {
-            int end = Math.min(safe.length(), pos + width);
-            if (end < safe.length()) {
-                int space = safe.lastIndexOf(' ', end);
-                if (space > pos + 8) end = space;
-            }
-            String part = safe.substring(pos, end).trim();
-            if (!part.isEmpty()) printText(part + "\n", fontSize, 0);
-            pos = end;
-            while (pos < safe.length() && safe.charAt(pos) == ' ') pos++;
-        }
-    }
-
-    private void printText(String text, int fontSize, int alignment) throws Exception {
-        transactVoid(TX_PRINT_SPEC_FORMAT_TEXT, data -> {
-            data.writeString(text);
-            data.writeString("ST");
-            data.writeInt(fontSize);
-            data.writeInt(alignment);
+        // The ESC/POS receipt already contains its own final paper feed, so do
+        // not add a second large feed here. This call commits the queued print.
+        transactVoid(TX_PERFORM_PRINT, data -> {
+            data.writeInt(0);
             data.writeStrongBinder(callback);
         });
     }
@@ -292,7 +197,7 @@ final class IposBuiltInPrinter {
         void write(Parcel data) throws Exception;
     }
 
-    /** Minimal Binder callback compatible with the vendor IPosPrinterCallback AIDL. */
+    /** Minimal Binder callback compatible with IPosPrinterCallback. */
     private static final class CallbackBinder extends Binder implements IInterface {
         CallbackBinder() {
             attachInterface(this, CALLBACK_DESCRIPTOR);
@@ -304,7 +209,8 @@ final class IposBuiltInPrinter {
         }
 
         @Override
-        protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
+        protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+                throws RemoteException {
             if (code == INTERFACE_TRANSACTION) {
                 if (reply != null) reply.writeString(CALLBACK_DESCRIPTOR);
                 return true;
@@ -321,73 +227,5 @@ final class IposBuiltInPrinter {
             }
             return super.onTransact(code, data, reply, flags);
         }
-    }
-
-    private static String clean(String value) {
-        if (value == null) return "";
-        return value
-                .replace('\r', ' ')
-                .replace('\n', ' ')
-                .replace('\t', ' ')
-                .replace('–', '-')
-                .replace('—', '-')
-                .replace('’', '\'')
-                .replace('“', '"')
-                .replace('”', '"')
-                .replaceAll("\\s+", " ")
-                .trim();
-    }
-
-    private static String firstNonEmpty(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty() && !"null".equalsIgnoreCase(value.trim())) {
-                return value;
-            }
-        }
-        return "";
-    }
-
-    private static String repeat(char c, int count) {
-        StringBuilder result = new StringBuilder();
-        for (int i = 0; i < count; i++) result.append(c);
-        return result.toString();
-    }
-
-    private static String formatUaeTime(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return "";
-        try {
-            String value = raw.trim();
-            Date date;
-            // Backend timestamps without a timezone are UTC.
-            if (value.matches(".*(?:Z|[+-]\\d{2}:?\\d{2})$")) {
-                date = parseIso(value);
-            } else {
-                date = parseIso(value + "Z");
-            }
-            if (date == null) return "";
-            SimpleDateFormat out = new SimpleDateFormat("dd/MM HH:mm", Locale.US);
-            out.setTimeZone(TimeZone.getTimeZone("Asia/Dubai"));
-            return out.format(date);
-        } catch (Exception ignored) {
-            return "";
-        }
-    }
-
-    private static Date parseIso(String value) {
-        String[] patterns = {
-                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-                "yyyy-MM-dd'T'HH:mm:ssXXX",
-                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-                "yyyy-MM-dd'T'HH:mm:ss'Z'"
-        };
-        for (String pattern : patterns) {
-            try {
-                SimpleDateFormat parser = new SimpleDateFormat(pattern, Locale.US);
-                parser.setTimeZone(TimeZone.getTimeZone("UTC"));
-                return parser.parse(value);
-            } catch (Exception ignored) {
-            }
-        }
-        return null;
     }
 }
