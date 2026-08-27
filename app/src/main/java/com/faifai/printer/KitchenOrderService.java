@@ -97,7 +97,7 @@ public class KitchenOrderService extends Service {
         String value = prefs == null ? "" : prefs.getString("api_base_url", "");
         if (value == null) value = "";
         value = value.trim();
-        if (!value.startsWith("https://") && !value.startsWith("http://")) {
+        if (!value.startsWith("https://")) {
             value = DEFAULT_API_BASE;
         }
         while (value.endsWith("/")) value = value.substring(0, value.length() - 1);

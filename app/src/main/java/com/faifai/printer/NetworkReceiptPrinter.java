@@ -608,8 +608,11 @@ final class NetworkReceiptPrinter {
         String source = rawSource == null ? "" : rawSource.trim();
         if (source.isEmpty()) return DEFAULT_LOGO_URL;
         if (source.startsWith("data:image/")) return source;
-        if (source.startsWith("http://") || source.startsWith("https://")) {
+        if (source.startsWith("https://")) {
             return source;
+        }
+        if (source.startsWith("http://")) {
+            return DEFAULT_LOGO_URL;
         }
         if (source.startsWith("/")) return WEB_BASE_URL + source;
         return WEB_BASE_URL + "/" + source;

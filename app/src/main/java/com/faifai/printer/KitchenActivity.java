@@ -394,9 +394,8 @@ public class KitchenActivity extends Activity {
         if (saved != null && saved.trim().length() >= 4) {
             return saved.trim();
         }
-
-        // No hard-coded fallback PIN. Unlock stays disabled until the current
-        // Kitchen PIN has synced from the secure Kitchen web session.
+        // Never use a hard-coded fallback PIN. The current Kitchen PIN must
+        // first be synced from the authenticated Kitchen web page.
         return "";
     }
 
