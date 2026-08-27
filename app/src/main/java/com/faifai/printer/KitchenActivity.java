@@ -126,7 +126,7 @@ public class KitchenActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
 
         // NETUM/P58 has a narrow POS screen. Keep the Kitchen page readable but
         // slightly more compact without changing the public web app on other devices.
@@ -394,9 +394,10 @@ public class KitchenActivity extends Activity {
         if (saved != null && saved.trim().length() >= 4) {
             return saved.trim();
         }
-        // Initial safety fallback matches the current Kitchen PIN. Once the
-        // Kitchen page syncs a PIN, that current PIN is used automatically.
-        return "2468";
+
+        // No hard-coded fallback PIN. Unlock stays disabled until the current
+        // Kitchen PIN has synced from the secure Kitchen web session.
+        return "";
     }
 
     private void showAdminExitDialog() {
@@ -421,7 +422,12 @@ public class KitchenActivity extends Activity {
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(v -> {
                     String entered = input.getText() == null ? "" : input.getText().toString().trim();
-                    if (!entered.equals(currentAdminExitPin())) {
+                    String expectedPin = currentAdminExitPin();
+                    if (expectedPin.length() < 4) {
+                        input.setError("Kitchen PIN not synced yet");
+                        return;
+                    }
+                    if (!entered.equals(expectedPin)) {
                         input.setError("Wrong PIN");
                         return;
                     }
@@ -567,7 +573,7 @@ public class KitchenActivity extends Activity {
                                 .edit()
                                 .putString("pin", pin)
                                 .putBoolean("sound", sound);
-                if (apiBase.startsWith("https://") || apiBase.startsWith("http://")) {
+                if (apiBase.startsWith("https://")) {
                     editor.putString("api_base_url", apiBase.replaceAll("/+$", ""));
                 }
                 editor.apply();
